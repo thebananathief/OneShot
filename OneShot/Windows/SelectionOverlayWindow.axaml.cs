@@ -22,15 +22,17 @@ public partial class SelectionOverlayWindow : Window
 
         _virtualScreen = virtualScreen;
         BackgroundImage.Source = virtualScreenCapture.Bitmap;
-        Position = new PixelPoint(virtualScreen.Left, virtualScreen.Top);
-        Width = virtualScreen.Width;
-        Height = virtualScreen.Height;
+        ApplyVirtualScreenBounds();
 
         PointerPressed += OnPointerPressed;
         PointerMoved += OnPointerMoved;
         PointerReleased += OnPointerReleased;
         KeyDown += OnKeyDown;
-        Opened += (_, _) => InstallEscapeHook();
+        Opened += (_, _) =>
+        {
+            ApplyVirtualScreenBounds();
+            InstallEscapeHook();
+        };
         Closed += (_, _) =>
         {
             RemoveEscapeHook();
@@ -108,7 +110,14 @@ public partial class SelectionOverlayWindow : Window
             return;
         }
 
-        var absolute = new Rect(localRect.X + _virtualScreen.Left, localRect.Y + _virtualScreen.Top, localRect.Width, localRect.Height);
+        // Pointer positions are DIPs; convert to physical screen pixels before cropping.
+        PixelPoint topLeftPx = ClientDipToScreenPixel(localRect.TopLeft);
+        PixelPoint bottomRightPx = ClientDipToScreenPixel(localRect.BottomRight);
+        var absolute = new Rect(
+            Math.Min(topLeftPx.X, bottomRightPx.X),
+            Math.Min(topLeftPx.Y, bottomRightPx.Y),
+            Math.Abs(bottomRightPx.X - topLeftPx.X),
+            Math.Abs(bottomRightPx.Y - topLeftPx.Y));
         _tcs.TrySetResult(absolute);
         Close();
     }
@@ -134,6 +143,32 @@ public partial class SelectionOverlayWindow : Window
     private static Rect BuildRect(Point a, Point b)
     {
         return new Rect(Math.Min(a.X, b.X), Math.Min(a.Y, b.Y), Math.Abs(a.X - b.X), Math.Abs(a.Y - b.Y));
+    }
+
+    private void ApplyVirtualScreenBounds()
+    {
+        double scaling = RenderScaling;
+        if (scaling <= 0)
+        {
+            scaling = 1.0;
+        }
+
+        Position = new PixelPoint(_virtualScreen.Left, _virtualScreen.Top);
+        Width = _virtualScreen.Width / scaling;
+        Height = _virtualScreen.Height / scaling;
+    }
+
+    private PixelPoint ClientDipToScreenPixel(Point dipPoint)
+    {
+        double scaling = RenderScaling;
+        if (scaling <= 0)
+        {
+            scaling = 1.0;
+        }
+
+        int clientX = (int)Math.Round(dipPoint.X * scaling);
+        int clientY = (int)Math.Round(dipPoint.Y * scaling);
+        return new PixelPoint(Position.X + clientX, Position.Y + clientY);
     }
 
     private void InstallEscapeHook()
