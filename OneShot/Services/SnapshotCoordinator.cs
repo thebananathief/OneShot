@@ -40,13 +40,9 @@ public sealed class SnapshotCoordinator
                 return;
             }
 
-            var sourceRect = new Rect(
-                rect.Value.X - virtualScreen.Left,
-                rect.Value.Y - virtualScreen.Top,
-                rect.Value.Width,
-                rect.Value.Height);
-
-            var capture = _captureService.Crop(fullSpanCapture, sourceRect);
+            var selectedRect = rect.Value;
+            Log($"Snapshot selection: x={selectedRect.X}, y={selectedRect.Y}, w={selectedRect.Width}, h={selectedRect.Height}");
+            var capture = _captureService.Capture(selectedRect);
             _onCaptureReady(capture);
         }
         catch (Exception ex)
