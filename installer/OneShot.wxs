@@ -1,0 +1,51 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Name="OneShot"
+    Manufacturer="OneShot"
+    Version="$(var.ProductVersion)"
+    UpgradeCode="9EA9371A-7414-42A8-92A6-06596F9B7672"
+    Scope="perUser"
+    InstallerVersion="500">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of OneShot is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="INSTALLFOLDER" Name="OneShot" />
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ProgramMenuDir" Name="OneShot" />
+    </StandardDirectory>
+
+    <Feature Id="MainFeature" Title="OneShot" Level="1">
+      <ComponentGroupRef Id="ProductComponents" />
+    </Feature>
+  </Package>
+
+  <Fragment>
+    <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
+      <Component Id="cmpMainExe" Guid="*">
+        <File Id="filOneShotExe" Source="$(var.PublishDir)\OneShot.exe" KeyPath="yes" />
+        <Environment
+          Id="envAddInstallDirToUserPath"
+          Name="Path"
+          Value="[INSTALLFOLDER]"
+          Part="last"
+          Action="set"
+          Permanent="no"
+          System="no" />
+        <Shortcut
+          Id="scutStartMenu"
+          Directory="ProgramMenuDir"
+          Name="OneShot"
+          Target="[INSTALLFOLDER]OneShot.exe"
+          WorkingDirectory="INSTALLFOLDER" />
+      </Component>
+
+      <Component Id="cmpMarkers" Guid="*" Directory="ProgramMenuDir">
+        <RegistryValue Root="HKCU" Key="Software\OneShot" Name="Installed" Type="integer" Value="1" KeyPath="yes" />
+        <RemoveFolder Id="rmProgramMenuDir" Directory="ProgramMenuDir" On="uninstall" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+</Wix>

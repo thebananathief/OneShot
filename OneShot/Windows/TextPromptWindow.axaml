@@ -1,0 +1,16 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="OneShot.Windows.TextPromptWindow"
+        Width="360"
+        Height="160"
+        CanResize="False"
+        WindowStartupLocation="CenterOwner"
+        Title="Add Text">
+  <Grid Margin="12" RowDefinitions="*,Auto">
+    <TextBox x:Name="InputText" />
+    <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,10,0,0">
+      <Button x:Name="OkButton" Width="90" Content="OK" />
+      <Button x:Name="CancelButton" Width="90" Content="Cancel" />
+    </StackPanel>
+  </Grid>
+</Window>

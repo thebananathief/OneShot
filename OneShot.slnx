@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="OneShot/OneShot.csproj" />
+  <Project Path="OneShot.Tests/OneShot.Tests.csproj" />
+</Solution>

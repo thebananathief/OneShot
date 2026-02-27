@@ -1,0 +1,215 @@
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Input;
+using Avalonia.Threading;
+using OneShot.Models;
+using System.Runtime.InteropServices;
+
+namespace OneShot.Windows;
+
+public partial class SelectionOverlayWindow : Window
+{
+    private readonly TaskCompletionSource<Rect?> _tcs = new();
+    private readonly System.Drawing.Rectangle _virtualScreen;
+    private readonly NativeMethods.LowLevelKeyboardProc _keyboardProc;
+    private nint _keyboardHook;
+    private Point? _start;
+
+    public SelectionOverlayWindow(CapturedImage virtualScreenCapture, System.Drawing.Rectangle virtualScreen)
+    {
+        InitializeComponent();
+        _keyboardProc = OnLowLevelKeyboard;
+
+        _virtualScreen = virtualScreen;
+        BackgroundImage.Source = virtualScreenCapture.Bitmap;
+        Position = new PixelPoint(virtualScreen.Left, virtualScreen.Top);
+        Width = virtualScreen.Width;
+        Height = virtualScreen.Height;
+
+        PointerPressed += OnPointerPressed;
+        PointerMoved += OnPointerMoved;
+        PointerReleased += OnPointerReleased;
+        KeyDown += OnKeyDown;
+        Opened += (_, _) => InstallEscapeHook();
+        Closed += (_, _) =>
+        {
+            RemoveEscapeHook();
+            if (!_tcs.Task.IsCompleted)
+            {
+                _tcs.TrySetResult(null);
+            }
+        };
+    }
+
+    public Task<Rect?> GetSelectionAsync()
+    {
+        Show();
+        return _tcs.Task;
+    }
+
+    private void OnPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        var point = e.GetCurrentPoint(this);
+        if (point.Properties.IsRightButtonPressed)
+        {
+            _tcs.TrySetResult(null);
+            Close();
+            return;
+        }
+
+        if (!point.Properties.IsLeftButtonPressed)
+        {
+            return;
+        }
+
+        _start = e.GetPosition(this);
+        SelectionRect.IsVisible = true;
+        UpdateRect(_start.Value, _start.Value);
+        e.Pointer.Capture(this);
+    }
+
+    private void OnPointerMoved(object? sender, PointerEventArgs e)
+    {
+        if (_start is null)
+        {
+            return;
+        }
+
+        if (!e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
+        {
+            return;
+        }
+
+        UpdateRect(_start.Value, e.GetPosition(this));
+    }
+
+    private void OnPointerReleased(object? sender, PointerReleasedEventArgs e)
+    {
+        if (_start is null)
+        {
+            return;
+        }
+
+        if (e.InitialPressMouseButton != MouseButton.Left)
+        {
+            return;
+        }
+
+        e.Pointer.Capture(null);
+
+        Point end = e.GetPosition(this);
+        Rect localRect = BuildRect(_start.Value, end);
+        _start = null;
+
+        if (localRect.Width < 3 || localRect.Height < 3)
+        {
+            _tcs.TrySetResult(null);
+            Close();
+            return;
+        }
+
+        var absolute = new Rect(localRect.X + _virtualScreen.Left, localRect.Y + _virtualScreen.Top, localRect.Width, localRect.Height);
+        _tcs.TrySetResult(absolute);
+        Close();
+    }
+
+    private void OnKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Escape)
+        {
+            _tcs.TrySetResult(null);
+            Close();
+        }
+    }
+
+    private void UpdateRect(Point start, Point end)
+    {
+        Rect rect = BuildRect(start, end);
+        Canvas.SetLeft(SelectionRect, rect.X);
+        Canvas.SetTop(SelectionRect, rect.Y);
+        SelectionRect.Width = rect.Width;
+        SelectionRect.Height = rect.Height;
+    }
+
+    private static Rect BuildRect(Point a, Point b)
+    {
+        return new Rect(Math.Min(a.X, b.X), Math.Min(a.Y, b.Y), Math.Abs(a.X - b.X), Math.Abs(a.Y - b.Y));
+    }
+
+    private void InstallEscapeHook()
+    {
+        if (_keyboardHook != nint.Zero)
+        {
+            return;
+        }
+
+        _keyboardHook = NativeMethods.SetWindowsHookEx(NativeMethods.WhKeyboardLl, _keyboardProc, nint.Zero, 0);
+    }
+
+    private void RemoveEscapeHook()
+    {
+        if (_keyboardHook == nint.Zero)
+        {
+            return;
+        }
+
+        NativeMethods.UnhookWindowsHookEx(_keyboardHook);
+        _keyboardHook = nint.Zero;
+    }
+
+    private nint OnLowLevelKeyboard(int code, nint wParam, nint lParam)
+    {
+        if (code >= 0 && wParam == NativeMethods.WmKeyDown)
+        {
+            var key = Marshal.PtrToStructure<NativeMethods.Kbdllhookstruct>(lParam);
+            if (key.vkCode == NativeMethods.VkEscape)
+            {
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (!_tcs.Task.IsCompleted)
+                    {
+                        _tcs.TrySetResult(null);
+                    }
+
+                    if (IsVisible)
+                    {
+                        Close();
+                    }
+                });
+
+                return (nint)1;
+            }
+        }
+
+        return NativeMethods.CallNextHookEx(nint.Zero, code, wParam, lParam);
+    }
+
+    private static class NativeMethods
+    {
+        internal const int WhKeyboardLl = 13;
+        internal static readonly nint WmKeyDown = (nint)0x0100;
+        internal const uint VkEscape = 0x1B;
+
+        internal delegate nint LowLevelKeyboardProc(int nCode, nint wParam, nint lParam);
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct Kbdllhookstruct
+        {
+            public uint vkCode;
+            public uint scanCode;
+            public uint flags;
+            public uint time;
+            public nint dwExtraInfo;
+        }
+
+        [DllImport("user32.dll")]
+        internal static extern nint SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, nint hMod, uint dwThreadId);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool UnhookWindowsHookEx(nint hhk);
+
+        [DllImport("user32.dll")]
+        internal static extern nint CallNextHookEx(nint hhk, int nCode, nint wParam, nint lParam);
+    }
+}
