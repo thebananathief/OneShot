@@ -1,6 +1,7 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
+using Avalonia.Media;
 using Avalonia.Threading;
 using OneShot.Models;
 using System.Runtime.InteropServices;
@@ -32,6 +33,7 @@ public partial class SelectionOverlayWindow : Window
         Opened += (_, _) =>
         {
             ApplyVirtualScreenBounds();
+            CalibrateBackgroundAlignment();
             InstallEscapeHook();
         };
         Closed += (_, _) =>
@@ -173,28 +175,56 @@ public partial class SelectionOverlayWindow : Window
 
     private void ApplyVirtualScreenBounds()
     {
-        double scaling = RenderScaling;
-        if (scaling <= 0)
-        {
-            scaling = 1.0;
-        }
-
+        double scaling = GetRenderScaling();
         Position = new PixelPoint(_virtualScreen.Left, _virtualScreen.Top);
         Width = _virtualScreen.Width / scaling;
         Height = _virtualScreen.Height / scaling;
     }
 
-    private PixelPoint ClientDipToScreenPixel(Point dipPoint)
+    private void CalibrateBackgroundAlignment()
     {
-        double scaling = RenderScaling;
-        if (scaling <= 0)
+        if (!TryGetClientScreenOrigin(out var clientOrigin))
         {
-            scaling = 1.0;
+            BackgroundImage.RenderTransform = null;
+            return;
         }
 
+        int offsetX = clientOrigin.X - _virtualScreen.Left;
+        int offsetY = clientOrigin.Y - _virtualScreen.Top;
+        double scaling = GetRenderScaling();
+        BackgroundImage.RenderTransform = new TranslateTransform(-(offsetX / scaling), -(offsetY / scaling));
+    }
+
+    private PixelPoint ClientDipToScreenPixel(Point dipPoint)
+    {
+        double scaling = GetRenderScaling();
         int clientX = (int)Math.Round(dipPoint.X * scaling);
         int clientY = (int)Math.Round(dipPoint.Y * scaling);
+        if (TryGetClientScreenOrigin(out var origin))
+        {
+            return new PixelPoint(origin.X + clientX, origin.Y + clientY);
+        }
+
         return new PixelPoint(Position.X + clientX, Position.Y + clientY);
+    }
+
+    private double GetRenderScaling()
+    {
+        double scaling = RenderScaling;
+        return scaling > 0 ? scaling : 1.0;
+    }
+
+    private bool TryGetClientScreenOrigin(out NativeMethods.NativePoint origin)
+    {
+        origin = default;
+        var handle = TryGetPlatformHandle();
+        if (handle is null || handle.Handle == nint.Zero)
+        {
+            return false;
+        }
+
+        origin = new NativeMethods.NativePoint { X = 0, Y = 0 };
+        return NativeMethods.ClientToScreen(handle.Handle, ref origin);
     }
 
     private void InstallEscapeHook()
@@ -279,6 +309,10 @@ public partial class SelectionOverlayWindow : Window
 
         [DllImport("user32.dll")]
         internal static extern nint CallNextHookEx(nint hhk, int nCode, nint wParam, nint lParam);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool ClientToScreen(nint hWnd, ref NativePoint point);
 
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
