@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using Avalonia;
 using OneShot.Models;
 using OneShot.Windows;
@@ -28,7 +29,7 @@ public sealed class SnapshotCoordinator
 
         try
         {
-            var virtualScreen = System.Windows.Forms.SystemInformation.VirtualScreen;
+            var virtualScreen = GetVirtualScreenBounds();
             var virtualRect = new Rect(virtualScreen.Left, virtualScreen.Top, virtualScreen.Width, virtualScreen.Height);
             var fullSpanCapture = _captureService.Capture(virtualRect);
 
@@ -67,5 +68,25 @@ public sealed class SnapshotCoordinator
         }
 
         Debug.WriteLine(message);
+    }
+
+    private static System.Drawing.Rectangle GetVirtualScreenBounds()
+    {
+        int left = NativeMethods.GetSystemMetrics(NativeMethods.SmXvirtualscreen);
+        int top = NativeMethods.GetSystemMetrics(NativeMethods.SmYvirtualscreen);
+        int width = NativeMethods.GetSystemMetrics(NativeMethods.SmCxvirtualscreen);
+        int height = NativeMethods.GetSystemMetrics(NativeMethods.SmCyvirtualscreen);
+        return new System.Drawing.Rectangle(left, top, width, height);
+    }
+
+    private static class NativeMethods
+    {
+        internal const int SmXvirtualscreen = 76;
+        internal const int SmYvirtualscreen = 77;
+        internal const int SmCxvirtualscreen = 78;
+        internal const int SmCyvirtualscreen = 79;
+
+        [DllImport("user32.dll")]
+        internal static extern int GetSystemMetrics(int nIndex);
     }
 }

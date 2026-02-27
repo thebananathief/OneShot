@@ -14,6 +14,7 @@ public partial class SelectionOverlayWindow : Window
     private readonly NativeMethods.LowLevelKeyboardProc _keyboardProc;
     private nint _keyboardHook;
     private Point? _start;
+    private NativeMethods.NativePoint? _startCursorPosition;
 
     public SelectionOverlayWindow(CapturedImage virtualScreenCapture, System.Drawing.Rectangle virtualScreen)
     {
@@ -54,6 +55,8 @@ public partial class SelectionOverlayWindow : Window
         var point = e.GetCurrentPoint(this);
         if (point.Properties.IsRightButtonPressed)
         {
+            _start = null;
+            _startCursorPosition = null;
             _tcs.TrySetResult(null);
             Close();
             return;
@@ -65,6 +68,11 @@ public partial class SelectionOverlayWindow : Window
         }
 
         _start = e.GetPosition(this);
+        if (NativeMethods.TryGetCursorPos(out var cursorPosition))
+        {
+            _startCursorPosition = cursorPosition;
+        }
+
         SelectionRect.IsVisible = true;
         UpdateRect(_start.Value, _start.Value);
         e.Pointer.Capture(this);
@@ -105,19 +113,35 @@ public partial class SelectionOverlayWindow : Window
 
         if (localRect.Width < 3 || localRect.Height < 3)
         {
+            _startCursorPosition = null;
             _tcs.TrySetResult(null);
             Close();
             return;
         }
 
-        // Pointer positions are DIPs; convert to physical screen pixels before cropping.
-        PixelPoint topLeftPx = ClientDipToScreenPixel(localRect.TopLeft);
-        PixelPoint bottomRightPx = ClientDipToScreenPixel(localRect.BottomRight);
-        var absolute = new Rect(
-            Math.Min(topLeftPx.X, bottomRightPx.X),
-            Math.Min(topLeftPx.Y, bottomRightPx.Y),
-            Math.Abs(bottomRightPx.X - topLeftPx.X),
-            Math.Abs(bottomRightPx.Y - topLeftPx.Y));
+        Rect absolute;
+        if (_startCursorPosition.HasValue && NativeMethods.TryGetCursorPos(out var endCursorPosition))
+        {
+            var startCursorPosition = _startCursorPosition.Value;
+            absolute = new Rect(
+                Math.Min(startCursorPosition.X, endCursorPosition.X),
+                Math.Min(startCursorPosition.Y, endCursorPosition.Y),
+                Math.Abs(endCursorPosition.X - startCursorPosition.X),
+                Math.Abs(endCursorPosition.Y - startCursorPosition.Y));
+        }
+        else
+        {
+            // Fallback for environments where cursor lookup fails.
+            PixelPoint topLeftPx = ClientDipToScreenPixel(localRect.TopLeft);
+            PixelPoint bottomRightPx = ClientDipToScreenPixel(localRect.BottomRight);
+            absolute = new Rect(
+                Math.Min(topLeftPx.X, bottomRightPx.X),
+                Math.Min(topLeftPx.Y, bottomRightPx.Y),
+                Math.Abs(bottomRightPx.X - topLeftPx.X),
+                Math.Abs(bottomRightPx.Y - topLeftPx.Y));
+        }
+
+        _startCursorPosition = null;
         _tcs.TrySetResult(absolute);
         Close();
     }
@@ -126,6 +150,8 @@ public partial class SelectionOverlayWindow : Window
     {
         if (e.Key == Key.Escape)
         {
+            _start = null;
+            _startCursorPosition = null;
             _tcs.TrySetResult(null);
             Close();
         }
@@ -237,6 +263,13 @@ public partial class SelectionOverlayWindow : Window
             public nint dwExtraInfo;
         }
 
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct NativePoint
+        {
+            public int X;
+            public int Y;
+        }
+
         [DllImport("user32.dll")]
         internal static extern nint SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, nint hMod, uint dwThreadId);
 
@@ -246,5 +279,14 @@ public partial class SelectionOverlayWindow : Window
 
         [DllImport("user32.dll")]
         internal static extern nint CallNextHookEx(nint hhk, int nCode, nint wParam, nint lParam);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetCursorPos(out NativePoint point);
+
+        internal static bool TryGetCursorPos(out NativePoint point)
+        {
+            return GetCursorPos(out point);
+        }
     }
 }
