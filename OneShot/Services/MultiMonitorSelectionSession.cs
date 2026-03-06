@@ -11,27 +11,29 @@ internal sealed class MultiMonitorSelectionSession
 {
     private const int MinimumSelectionWidth = 3;
     private const int MinimumSelectionHeight = 3;
-    private const int CursorPollIntervalMs = 8;
 
     private readonly IReadOnlyList<MonitorSnapshot> _monitorSnapshots;
     private readonly Func<MonitorSnapshot, ISelectionOverlaySurface> _surfaceFactory;
     private readonly TaskCompletionSource<Rect?> _selectionTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly List<ISelectionOverlaySurface> _surfaces = new();
     private readonly NativeMethods.LowLevelKeyboardProc _keyboardProc;
+    private readonly NativeMethods.LowLevelMouseProc _mouseProc;
     private readonly Action<string>? _log;
 
     private nint _keyboardHook;
+    private nint _mouseHook;
     private PixelPoint? _dragStart;
     private PixelPoint? _dragCurrent;
-    private CancellationTokenSource? _dragPollingCts;
     private bool _started;
     private bool _isFinishing;
+    private bool _isDragging;
 
     public MultiMonitorSelectionSession(IReadOnlyList<MonitorSnapshot> monitorSnapshots, Func<MonitorSnapshot, ISelectionOverlaySurface>? surfaceFactory = null, Action<string>? log = null)
     {
         _monitorSnapshots = monitorSnapshots;
         _surfaceFactory = surfaceFactory ?? (snapshot => new SelectionOverlayWindow(snapshot.Image, snapshot.Bounds));
         _keyboardProc = OnLowLevelKeyboard;
+        _mouseProc = OnLowLevelMouse;
         _log = log;
     }
 
@@ -59,6 +61,7 @@ internal sealed class MultiMonitorSelectionSession
         }
 
         InstallEscapeHook();
+        InstallMouseHook();
         foreach (var surface in _surfaces)
         {
             surface.Show();
@@ -76,8 +79,8 @@ internal sealed class MultiMonitorSelectionSession
 
         _dragStart = cursorPosition;
         _dragCurrent = cursorPosition;
+        _isDragging = true;
         UpdateSelectionVisuals();
-        StartDragPolling();
     }
 
     private void OnCancelRequested(object? sender, EventArgs e)
@@ -93,45 +96,6 @@ internal sealed class MultiMonitorSelectionSession
         }
 
         Finish(null);
-    }
-
-    private void StartDragPolling()
-    {
-        _dragPollingCts?.Cancel();
-        _dragPollingCts?.Dispose();
-        _dragPollingCts = new CancellationTokenSource();
-        _ = PollDragLoopAsync(_dragPollingCts.Token);
-    }
-
-    private async Task PollDragLoopAsync(CancellationToken cancellationToken)
-    {
-        try
-        {
-            while (!cancellationToken.IsCancellationRequested)
-            {
-                if (NativeMethods.TryGetCursorPos(out var cursorPosition))
-                {
-                    _dragCurrent = new PixelPoint(cursorPosition.X, cursorPosition.Y);
-                    UpdateSelectionVisuals();
-                }
-
-                if (!NativeMethods.IsLeftButtonPressed())
-                {
-                    CompleteSelection();
-                    return;
-                }
-
-                await Task.Delay(CursorPollIntervalMs, cancellationToken);
-            }
-        }
-        catch (OperationCanceledException)
-        {
-        }
-        catch (Exception ex)
-        {
-            Log($"Selection drag polling failed: {ex}");
-            Finish(null);
-        }
     }
 
     private void CompleteSelection()
@@ -177,12 +141,11 @@ internal sealed class MultiMonitorSelectionSession
         }
 
         _isFinishing = true;
+        _isDragging = false;
         _dragStart = null;
         _dragCurrent = null;
-        _dragPollingCts?.Cancel();
-        _dragPollingCts?.Dispose();
-        _dragPollingCts = null;
         RemoveEscapeHook();
+        RemoveMouseHook();
 
         foreach (var surface in _surfaces.ToList())
         {
@@ -219,6 +182,27 @@ internal sealed class MultiMonitorSelectionSession
         _keyboardHook = nint.Zero;
     }
 
+    private void InstallMouseHook()
+    {
+        if (_mouseHook != nint.Zero)
+        {
+            return;
+        }
+
+        _mouseHook = NativeMethods.SetWindowsHookExMouse(NativeMethods.WhMouseLl, _mouseProc, nint.Zero, 0);
+    }
+
+    private void RemoveMouseHook()
+    {
+        if (_mouseHook == nint.Zero)
+        {
+            return;
+        }
+
+        NativeMethods.UnhookWindowsHookEx(_mouseHook);
+        _mouseHook = nint.Zero;
+    }
+
     private nint OnLowLevelKeyboard(int code, nint wParam, nint lParam)
     {
         if (code >= 0 && wParam == NativeMethods.WmKeyDown)
@@ -228,6 +212,55 @@ internal sealed class MultiMonitorSelectionSession
             {
                 Dispatcher.UIThread.Post(() => Finish(null));
                 return (nint)1;
+            }
+        }
+
+        return NativeMethods.CallNextHookEx(nint.Zero, code, wParam, lParam);
+    }
+
+    private nint OnLowLevelMouse(int code, nint wParam, nint lParam)
+    {
+        if (code >= 0)
+        {
+            var mouse = Marshal.PtrToStructure<NativeMethods.Msllhookstruct>(lParam);
+            var point = new PixelPoint(mouse.pt.X, mouse.pt.Y);
+
+            if (wParam == NativeMethods.WmMouseMove && _isDragging)
+            {
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (_isFinishing || !_isDragging)
+                    {
+                        return;
+                    }
+
+                    _dragCurrent = point;
+                    UpdateSelectionVisuals();
+                });
+            }
+            else if (wParam == NativeMethods.WmLButtonUp && _isDragging)
+            {
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (_isFinishing || !_isDragging)
+                    {
+                        return;
+                    }
+
+                    _dragCurrent = point;
+                    _isDragging = false;
+                    CompleteSelection();
+                });
+            }
+            else if (wParam == NativeMethods.WmRButtonDown)
+            {
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (!_isFinishing)
+                    {
+                        Finish(null);
+                    }
+                });
             }
         }
 
@@ -248,17 +281,31 @@ internal sealed class MultiMonitorSelectionSession
     private static class NativeMethods
     {
         internal const int WhKeyboardLl = 13;
+        internal const int WhMouseLl = 14;
         internal static readonly nint WmKeyDown = (nint)0x0100;
+        internal static readonly nint WmMouseMove = (nint)0x0200;
+        internal static readonly nint WmLButtonUp = (nint)0x0202;
+        internal static readonly nint WmRButtonDown = (nint)0x0204;
         internal const uint VkEscape = 0x1B;
-        private const int VkLButton = 0x01;
 
         internal delegate nint LowLevelKeyboardProc(int nCode, nint wParam, nint lParam);
+        internal delegate nint LowLevelMouseProc(int nCode, nint wParam, nint lParam);
 
         [StructLayout(LayoutKind.Sequential)]
         internal struct Kbdllhookstruct
         {
             public uint vkCode;
             public uint scanCode;
+            public uint flags;
+            public uint time;
+            public nint dwExtraInfo;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct Msllhookstruct
+        {
+            public NativePoint pt;
+            public uint mouseData;
             public uint flags;
             public uint time;
             public nint dwExtraInfo;
@@ -274,6 +321,9 @@ internal sealed class MultiMonitorSelectionSession
         [DllImport("user32.dll")]
         internal static extern nint SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, nint hMod, uint dwThreadId);
 
+        [DllImport("user32.dll", EntryPoint = "SetWindowsHookEx")]
+        internal static extern nint SetWindowsHookExMouse(int idHook, LowLevelMouseProc lpfn, nint hMod, uint dwThreadId);
+
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
         internal static extern bool UnhookWindowsHookEx(nint hhk);
@@ -285,17 +335,9 @@ internal sealed class MultiMonitorSelectionSession
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool GetCursorPos(out NativePoint point);
 
-        [DllImport("user32.dll")]
-        private static extern short GetAsyncKeyState(int vKey);
-
         internal static bool TryGetCursorPos(out NativePoint point)
         {
             return GetCursorPos(out point);
-        }
-
-        internal static bool IsLeftButtonPressed()
-        {
-            return (GetAsyncKeyState(VkLButton) & 0x8000) != 0;
         }
     }
 }
