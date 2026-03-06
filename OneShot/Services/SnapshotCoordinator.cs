@@ -98,32 +98,43 @@ public sealed class SnapshotCoordinator
 
     private static IReadOnlyList<System.Drawing.Rectangle> GetMonitorBounds()
     {
-        var bounds = new List<System.Drawing.Rectangle>();
-        bool success = NativeMethods.EnumDisplayMonitors(
-            nint.Zero,
-            nint.Zero,
-            (hMonitor, _, _, _) =>
-            {
-                if (NativeMethods.TryGetMonitorBounds(hMonitor, out var monitorBounds))
-                {
-                    bounds.Add(monitorBounds);
-                }
-
-                return true;
-            },
-            nint.Zero);
-
-        if (success && bounds.Count > 0)
+        nint previousDpiContext = NativeMethods.SetThreadDpiAwarenessContext(NativeMethods.DpiAwarenessContextPerMonitorAwareV2);
+        try
         {
-            return bounds;
-        }
+            var bounds = new List<System.Drawing.Rectangle>();
+            bool success = NativeMethods.EnumDisplayMonitors(
+                nint.Zero,
+                nint.Zero,
+                (hMonitor, _, _, _) =>
+                {
+                    if (NativeMethods.TryGetMonitorBounds(hMonitor, out var monitorBounds))
+                    {
+                        bounds.Add(monitorBounds);
+                    }
 
-        // Fallback for environments where monitor enumeration fails unexpectedly.
-        var fallbackLeft = NativeMethods.GetSystemMetrics(NativeMethods.SmXvirtualscreen);
-        var fallbackTop = NativeMethods.GetSystemMetrics(NativeMethods.SmYvirtualscreen);
-        var fallbackWidth = NativeMethods.GetSystemMetrics(NativeMethods.SmCxvirtualscreen);
-        var fallbackHeight = NativeMethods.GetSystemMetrics(NativeMethods.SmCyvirtualscreen);
-        return new[] { new System.Drawing.Rectangle(fallbackLeft, fallbackTop, fallbackWidth, fallbackHeight) };
+                    return true;
+                },
+                nint.Zero);
+
+            if (success && bounds.Count > 0)
+            {
+                return bounds;
+            }
+
+            // Fallback for environments where monitor enumeration fails unexpectedly.
+            var fallbackLeft = NativeMethods.GetSystemMetrics(NativeMethods.SmXvirtualscreen);
+            var fallbackTop = NativeMethods.GetSystemMetrics(NativeMethods.SmYvirtualscreen);
+            var fallbackWidth = NativeMethods.GetSystemMetrics(NativeMethods.SmCxvirtualscreen);
+            var fallbackHeight = NativeMethods.GetSystemMetrics(NativeMethods.SmCyvirtualscreen);
+            return new[] { new System.Drawing.Rectangle(fallbackLeft, fallbackTop, fallbackWidth, fallbackHeight) };
+        }
+        finally
+        {
+            if (previousDpiContext != nint.Zero)
+            {
+                NativeMethods.SetThreadDpiAwarenessContext(previousDpiContext);
+            }
+        }
     }
 
     private static class NativeMethods
@@ -132,6 +143,7 @@ public sealed class SnapshotCoordinator
         internal const int SmYvirtualscreen = 77;
         internal const int SmCxvirtualscreen = 78;
         internal const int SmCyvirtualscreen = 79;
+        internal static readonly nint DpiAwarenessContextPerMonitorAwareV2 = new(-4);
 
         internal delegate bool MonitorEnumProc(nint hMonitor, nint hdcMonitor, nint lprcMonitor, nint dwData);
 
@@ -158,6 +170,9 @@ public sealed class SnapshotCoordinator
         [DllImport("user32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         internal static extern bool EnumDisplayMonitors(nint hdc, nint lprcClip, MonitorEnumProc lpfnEnum, nint dwData);
+
+        [DllImport("user32.dll")]
+        internal static extern nint SetThreadDpiAwarenessContext(nint dpiContext);
 
         [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
         [return: MarshalAs(UnmanagedType.Bool)]
