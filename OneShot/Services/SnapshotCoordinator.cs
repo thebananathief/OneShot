@@ -1,8 +1,7 @@
 using System.Diagnostics;
-using System.Runtime.InteropServices;
 using Avalonia;
 using OneShot.Models;
-using OneShot.Windows;
+using Screen = System.Windows.Forms.Screen;
 
 namespace OneShot.Services;
 
@@ -30,11 +29,9 @@ public sealed class SnapshotCoordinator
         try
         {
             var virtualScreen = GetVirtualScreenBounds();
-            var virtualRect = new Rect(virtualScreen.Left, virtualScreen.Top, virtualScreen.Width, virtualScreen.Height);
-            var fullSpanCapture = _captureService.Capture(virtualRect);
-
-            var overlay = new SelectionOverlayWindow(fullSpanCapture, virtualScreen);
-            var rect = await overlay.GetSelectionAsync();
+            var monitorSnapshots = CaptureMonitorSnapshots(virtualScreen);
+            var overlaySession = new MultiMonitorSelectionSession(monitorSnapshots, log: Log);
+            var rect = await overlaySession.GetSelectionAsync();
             if (rect is null)
             {
                 return;
@@ -68,21 +65,35 @@ public sealed class SnapshotCoordinator
 
     private static System.Drawing.Rectangle GetVirtualScreenBounds()
     {
-        int left = NativeMethods.GetSystemMetrics(NativeMethods.SmXvirtualscreen);
-        int top = NativeMethods.GetSystemMetrics(NativeMethods.SmYvirtualscreen);
-        int width = NativeMethods.GetSystemMetrics(NativeMethods.SmCxvirtualscreen);
-        int height = NativeMethods.GetSystemMetrics(NativeMethods.SmCyvirtualscreen);
-        return new System.Drawing.Rectangle(left, top, width, height);
+        var screens = Screen.AllScreens;
+        if (screens.Length == 0)
+        {
+            return Screen.PrimaryScreen?.Bounds ?? new System.Drawing.Rectangle(0, 0, 1, 1);
+        }
+
+        return screens
+            .Select(screen => screen.Bounds)
+            .Aggregate(System.Drawing.Rectangle.Union);
     }
 
-    private static class NativeMethods
+    private IReadOnlyList<MonitorSnapshot> CaptureMonitorSnapshots(System.Drawing.Rectangle virtualScreenBounds)
     {
-        internal const int SmXvirtualscreen = 76;
-        internal const int SmYvirtualscreen = 77;
-        internal const int SmCxvirtualscreen = 78;
-        internal const int SmCyvirtualscreen = 79;
+        var virtualScreenRect = new Rect(virtualScreenBounds.Left, virtualScreenBounds.Top, virtualScreenBounds.Width, virtualScreenBounds.Height);
+        var virtualCapture = _captureService.Capture(virtualScreenRect);
+        var monitorSnapshots = new List<MonitorSnapshot>();
 
-        [DllImport("user32.dll")]
-        internal static extern int GetSystemMetrics(int nIndex);
+        foreach (var screen in Screen.AllScreens)
+        {
+            System.Drawing.Rectangle monitorBounds = screen.Bounds;
+            var selectionInVirtualCapture = new Rect(
+                monitorBounds.Left - virtualScreenBounds.Left,
+                monitorBounds.Top - virtualScreenBounds.Top,
+                monitorBounds.Width,
+                monitorBounds.Height);
+            var monitorCapture = _captureService.Crop(virtualCapture, selectionInVirtualCapture);
+            monitorSnapshots.Add(new MonitorSnapshot(monitorBounds, monitorCapture));
+        }
+
+        return monitorSnapshots;
     }
 }
