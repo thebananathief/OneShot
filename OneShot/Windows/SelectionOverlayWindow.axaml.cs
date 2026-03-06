@@ -16,11 +16,11 @@ public partial class SelectionOverlayWindow : Window, ISelectionOverlaySurface
         InitializeComponent();
         _monitorBounds = monitorBounds;
         BackgroundImage.Source = monitorCapture.Bitmap;
-        ApplyMonitorBounds();
+        ApplyMonitorBoundsAndAlignClientOrigin();
 
         PointerPressed += OnPointerPressed;
-        Opened += (_, _) => ApplyMonitorBounds();
-        ScalingChanged += (_, _) => ApplyMonitorBounds();
+        Opened += (_, _) => ApplyMonitorBoundsAndAlignClientOrigin();
+        ScalingChanged += (_, _) => ApplyMonitorBoundsAndAlignClientOrigin();
         Closed += (_, _) => SurfaceClosed?.Invoke(this, EventArgs.Empty);
     }
 
@@ -86,15 +86,46 @@ public partial class SelectionOverlayWindow : Window, ISelectionOverlaySurface
         double scaling = GetRenderScaling();
         int clientX = (int)Math.Round(dipPoint.X * scaling);
         int clientY = (int)Math.Round(dipPoint.Y * scaling);
+        if (TryGetClientScreenOrigin(out var clientOrigin))
+        {
+            return new PixelPoint(clientOrigin.X + clientX, clientOrigin.Y + clientY);
+        }
+
         return new PixelPoint(Position.X + clientX, Position.Y + clientY);
     }
 
-    private void ApplyMonitorBounds()
+    private void ApplyMonitorBoundsAndAlignClientOrigin()
     {
         double scaling = GetRenderScaling();
         Position = new PixelPoint(_monitorBounds.Left, _monitorBounds.Top);
         Width = _monitorBounds.Width / scaling;
         Height = _monitorBounds.Height / scaling;
+
+        if (!TryGetClientScreenOrigin(out var clientOrigin))
+        {
+            return;
+        }
+
+        int dx = clientOrigin.X - _monitorBounds.Left;
+        int dy = clientOrigin.Y - _monitorBounds.Top;
+        if (dx == 0 && dy == 0)
+        {
+            return;
+        }
+
+        Position = new PixelPoint(Position.X - dx, Position.Y - dy);
+    }
+
+    private bool TryGetClientScreenOrigin(out NativeMethods.NativePoint origin)
+    {
+        origin = default;
+        var handle = TryGetPlatformHandle();
+        if (handle is null || handle.Handle == nint.Zero)
+        {
+            return false;
+        }
+
+        return NativeMethods.ClientToScreen(handle.Handle, ref origin);
     }
 
     private double GetRenderScaling()
@@ -115,6 +146,10 @@ public partial class SelectionOverlayWindow : Window, ISelectionOverlaySurface
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool GetCursorPos(out NativePoint point);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool ClientToScreen(nint hWnd, ref NativePoint point);
 
         internal static bool TryGetCursorPos(out NativePoint point)
         {
