@@ -119,14 +119,16 @@ public sealed class NotificationCoordinator
                 continue;
             }
 
-            var bounds = notification.Bounds;
-            double width = bounds.Width > 0 ? bounds.Width : 220;
-            double height = bounds.Height > 0 ? bounds.Height : 88;
-            int x = (int)Math.Round((workingArea.Value.X + workingArea.Value.Width) - width - NotificationMargin);
-            int y = (int)Math.Round(top);
+            var placement = NotificationPlacement.Arrange(
+                workingArea.Value,
+                notification.Bounds,
+                notification.RenderScaling,
+                top,
+                NotificationMargin,
+                NotificationGap);
 
-            notification.Position = new PixelPoint(x, y);
-            top += height + NotificationGap;
+            notification.Position = placement.Position;
+            top = placement.NextTopInPixels;
         }
     }
 }
