@@ -10,13 +10,27 @@ public sealed class SnapshotCoordinator
     private readonly ScreenCaptureService _captureService;
     private readonly SemaphoreSlim _snapshotGate = new(1, 1);
     private readonly Action<CapturedImage> _onCaptureReady;
+    private readonly Func<IReadOnlyList<System.Drawing.Rectangle>> _monitorBoundsProvider;
+    private readonly Func<IReadOnlyList<MonitorSnapshot>, Task<Rect?>> _selectionProvider;
     private readonly Action<string>? _log;
 
     public SnapshotCoordinator(ScreenCaptureService captureService, Action<CapturedImage> onCaptureReady, Action<string>? log = null)
+        : this(captureService, onCaptureReady, log, GetMonitorBounds, CreateSelectionSessionAsync)
+    {
+    }
+
+    internal SnapshotCoordinator(
+        ScreenCaptureService captureService,
+        Action<CapturedImage> onCaptureReady,
+        Action<string>? log,
+        Func<IReadOnlyList<System.Drawing.Rectangle>> monitorBoundsProvider,
+        Func<IReadOnlyList<MonitorSnapshot>, Task<Rect?>> selectionProvider)
     {
         _captureService = captureService;
         _onCaptureReady = onCaptureReady;
         _log = log;
+        _monitorBoundsProvider = monitorBoundsProvider;
+        _selectionProvider = selectionProvider;
     }
 
     public async Task StartSnapshotAsync()
@@ -28,10 +42,8 @@ public sealed class SnapshotCoordinator
 
         try
         {
-            var virtualScreen = GetVirtualScreenBounds();
-            var monitorSnapshots = CaptureMonitorSnapshots(virtualScreen);
-            var overlaySession = new MultiMonitorSelectionSession(monitorSnapshots, log: Log);
-            var rect = await overlaySession.GetSelectionAsync();
+            var snapshotSession = CaptureSnapshotSession();
+            var rect = await _selectionProvider(snapshotSession.MonitorSnapshots);
             if (rect is null)
             {
                 return;
@@ -39,7 +51,8 @@ public sealed class SnapshotCoordinator
 
             var selectedRect = rect.Value;
             Log($"Snapshot selection: x={selectedRect.X}, y={selectedRect.Y}, w={selectedRect.Width}, h={selectedRect.Height}");
-            var capture = _captureService.Capture(selectedRect);
+            var selectionInVirtualCapture = SnapshotSelectionMapper.ToVirtualCaptureRect(selectedRect, snapshotSession.VirtualScreenBounds);
+            var capture = _captureService.Crop(snapshotSession.VirtualCapture, selectionInVirtualCapture);
             _onCaptureReady(capture);
         }
         catch (Exception ex)
@@ -63,37 +76,44 @@ public sealed class SnapshotCoordinator
         Debug.WriteLine(message);
     }
 
-    private static System.Drawing.Rectangle GetVirtualScreenBounds()
+    private SnapshotSession CaptureSnapshotSession()
     {
-        var monitorBounds = GetMonitorBounds();
+        var monitorBounds = _monitorBoundsProvider();
+        var virtualScreenBounds = GetVirtualScreenBounds(monitorBounds);
+        var virtualScreenRect = new Rect(
+            virtualScreenBounds.Left,
+            virtualScreenBounds.Top,
+            virtualScreenBounds.Width,
+            virtualScreenBounds.Height);
+        var virtualCapture = _captureService.Capture(virtualScreenRect);
+        var monitorSnapshots = new List<MonitorSnapshot>();
+
+        foreach (var bounds in monitorBounds)
+        {
+            var selectionInVirtualCapture = SnapshotSelectionMapper.ToVirtualCaptureRect(
+                new Rect(bounds.Left, bounds.Top, bounds.Width, bounds.Height),
+                virtualScreenBounds);
+            var monitorCapture = _captureService.Crop(virtualCapture, selectionInVirtualCapture);
+            monitorSnapshots.Add(new MonitorSnapshot(bounds, monitorCapture));
+        }
+
+        return new SnapshotSession(virtualScreenBounds, virtualCapture, monitorSnapshots);
+    }
+
+    private static System.Drawing.Rectangle GetVirtualScreenBounds(IReadOnlyList<System.Drawing.Rectangle> monitorBounds)
+    {
         if (monitorBounds.Count == 0)
         {
             return new System.Drawing.Rectangle(0, 0, 1, 1);
         }
 
-        return monitorBounds
-            .Aggregate(System.Drawing.Rectangle.Union);
+        return monitorBounds.Aggregate(System.Drawing.Rectangle.Union);
     }
 
-    private IReadOnlyList<MonitorSnapshot> CaptureMonitorSnapshots(System.Drawing.Rectangle virtualScreenBounds)
+    private static Task<Rect?> CreateSelectionSessionAsync(IReadOnlyList<MonitorSnapshot> monitorSnapshots)
     {
-        var virtualScreenRect = new Rect(virtualScreenBounds.Left, virtualScreenBounds.Top, virtualScreenBounds.Width, virtualScreenBounds.Height);
-        var virtualCapture = _captureService.Capture(virtualScreenRect);
-        var monitorSnapshots = new List<MonitorSnapshot>();
-        var monitorBounds = GetMonitorBounds();
-
-        foreach (var bounds in monitorBounds)
-        {
-            var selectionInVirtualCapture = new Rect(
-                bounds.Left - virtualScreenBounds.Left,
-                bounds.Top - virtualScreenBounds.Top,
-                bounds.Width,
-                bounds.Height);
-            var monitorCapture = _captureService.Crop(virtualCapture, selectionInVirtualCapture);
-            monitorSnapshots.Add(new MonitorSnapshot(bounds, monitorCapture));
-        }
-
-        return monitorSnapshots;
+        var overlaySession = new MultiMonitorSelectionSession(monitorSnapshots);
+        return overlaySession.GetSelectionAsync();
     }
 
     private static IReadOnlyList<System.Drawing.Rectangle> GetMonitorBounds()
@@ -203,4 +223,9 @@ public sealed class SnapshotCoordinator
             return true;
         }
     }
+
+    private sealed record SnapshotSession(
+        System.Drawing.Rectangle VirtualScreenBounds,
+        CapturedImage VirtualCapture,
+        IReadOnlyList<MonitorSnapshot> MonitorSnapshots);
 }
