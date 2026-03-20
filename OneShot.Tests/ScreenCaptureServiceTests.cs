@@ -20,6 +20,7 @@ public sealed class ScreenCaptureServiceTests
         backend.LastRequest.Should().BeEquivalentTo((10, 12, 99, 51));
         image.PixelWidth.Should().Be(99);
         image.PixelHeight.Should().Be(51);
+        ReadPixel(image, 0, 0).Should().Be(SKColors.OrangeRed);
         image.PngBytes.Should().NotBeEmpty();
     }
 
@@ -87,6 +88,29 @@ public sealed class ScreenCaptureServiceTests
         ReadPixel(cropped, 0, 0).Should().Be(new SKColor(60, 40, 0));
     }
 
+    [Fact]
+    public void Crop_BitmapBackedSource_WorksWithoutMaterializingPngFirst()
+    {
+        var service = new ScreenCaptureService(new FakeScreenCaptureBackend());
+        var source = CreateTaggedBitmapBackedImage(8, 6);
+
+        var cropped = service.Crop(source, new Rect(2, 1, 4, 3));
+
+        cropped.PixelWidth.Should().Be(4);
+        cropped.PixelHeight.Should().Be(3);
+        ReadPixel(cropped, 0, 0).Should().Be(new SKColor(60, 40, 0));
+        ReadPixel(cropped, 3, 2).Should().Be(new SKColor(150, 120, 0));
+    }
+
+    [Fact]
+    public void BitmapBackedImage_PngBytes_AreGeneratedLazilyAndRemainValid()
+    {
+        var image = CreateTaggedBitmapBackedImage(7, 5);
+
+        image.PngBytes.Should().NotBeEmpty();
+        ReadPixel(image, 6, 4).Should().Be(new SKColor(180, 160, 0));
+    }
+
     private static CapturedImage CreateTaggedImage(int width, int height)
     {
         using var bitmap = new SKBitmap(width, height, SKColorType.Bgra8888, SKAlphaType.Premul);
@@ -108,6 +132,20 @@ public sealed class ScreenCaptureServiceTests
         return CapturedImage.FromPngBytes(data.ToArray(), DateTimeOffset.UtcNow);
     }
 
+    private static CapturedImage CreateTaggedBitmapBackedImage(int width, int height)
+    {
+        var bitmap = new SKBitmap(width, height, SKColorType.Bgra8888, SKAlphaType.Premul);
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                bitmap.SetPixel(x, y, new SKColor((byte)(x * 30), (byte)(y * 40), 0));
+            }
+        }
+
+        return CapturedImage.FromBitmap(bitmap, DateTimeOffset.UtcNow);
+    }
+
     private static SKColor ReadPixel(CapturedImage image, int x, int y)
     {
         using var bitmap = SKBitmap.Decode(image.PngBytes);
@@ -118,21 +156,19 @@ public sealed class ScreenCaptureServiceTests
     {
         public (int X, int Y, int Width, int Height) LastRequest { get; private set; }
 
-        public byte[] CapturePng(int x, int y, int width, int height)
+        public SKBitmap CaptureBitmap(int x, int y, int width, int height)
         {
             LastRequest = (x, y, width, height);
-            using var bitmap = new SKBitmap(width, height, SKColorType.Bgra8888, SKAlphaType.Premul);
+            var bitmap = new SKBitmap(width, height, SKColorType.Bgra8888, SKAlphaType.Premul);
             using var canvas = new SKCanvas(bitmap);
             canvas.Clear(SKColors.OrangeRed);
-            using var image = SKImage.FromBitmap(bitmap);
-            using var data = image.Encode(SKEncodedImageFormat.Png, 100);
-            return data.ToArray();
+            return bitmap;
         }
     }
 
     private sealed class FailingScreenCaptureBackend : IScreenCaptureBackend
     {
-        public byte[] CapturePng(int x, int y, int width, int height)
+        public SKBitmap CaptureBitmap(int x, int y, int width, int height)
         {
             throw new IOException("Backend failure");
         }

@@ -65,11 +65,11 @@ public sealed class SnapshotCoordinatorTests
     {
         public List<(int X, int Y, int Width, int Height)> Requests { get; } = new();
 
-        public byte[] CapturePng(int x, int y, int width, int height)
+        public SKBitmap CaptureBitmap(int x, int y, int width, int height)
         {
             Requests.Add((x, y, width, height));
 
-            using var bitmap = new SKBitmap(width, height, SKColorType.Bgra8888, SKAlphaType.Premul);
+            var bitmap = new SKBitmap(width, height, SKColorType.Bgra8888, SKAlphaType.Premul);
             for (int row = 0; row < height; row++)
             {
                 for (int col = 0; col < width; col++)
@@ -78,9 +78,7 @@ public sealed class SnapshotCoordinatorTests
                 }
             }
 
-            using var image = SKImage.FromBitmap(bitmap);
-            using var data = image.Encode(SKEncodedImageFormat.Png, 100);
-            return data.ToArray();
+            return bitmap;
         }
     }
 }

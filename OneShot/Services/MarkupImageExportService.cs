@@ -12,14 +12,9 @@ public sealed class MarkupImageExportService : IMarkupImageExportService
             return source;
         }
 
-        using var baseBitmap = SKBitmap.Decode(source.PngBytes);
-        if (baseBitmap is null)
-        {
-            return source;
-        }
-
-        using var surface = SKSurface.Create(new SKImageInfo(baseBitmap.Width, baseBitmap.Height, SKColorType.Bgra8888, SKAlphaType.Premul));
-        var canvas = surface.Canvas;
+        var baseBitmap = source.AsSkBitmap();
+        var exportedBitmap = new SKBitmap(baseBitmap.Width, baseBitmap.Height, baseBitmap.ColorType, baseBitmap.AlphaType);
+        using var canvas = new SKCanvas(exportedBitmap);
         canvas.Clear(SKColors.Transparent);
         canvas.DrawBitmap(baseBitmap, 0, 0);
 
@@ -28,15 +23,7 @@ public sealed class MarkupImageExportService : IMarkupImageExportService
             DrawPrimitive(canvas, primitive);
         }
 
-        using var image = surface.Snapshot();
-        using var data = image.Encode(SKEncodedImageFormat.Png, 100);
-        if (data is null)
-        {
-            return source;
-        }
-
-        byte[] bytes = data.ToArray();
-        return new CapturedImage(bytes, DateTimeOffset.UtcNow, baseBitmap.Width, baseBitmap.Height);
+        return CapturedImage.FromBitmap(exportedBitmap, DateTimeOffset.UtcNow);
     }
 
     private static void DrawPrimitive(SKCanvas canvas, MarkupPrimitive primitive)

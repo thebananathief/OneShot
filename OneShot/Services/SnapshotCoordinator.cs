@@ -45,8 +45,8 @@ public sealed class SnapshotCoordinator
         {
             Log("StartSnapshotAsync entered.");
             var snapshotSession = CaptureSnapshotSession();
-            Log($"Snapshot session captured in {stopwatch.ElapsedMilliseconds}ms.");
-            Log($"Showing selection overlay at {stopwatch.ElapsedMilliseconds}ms.");
+            Log($"Monitor snapshot preparation completed in {stopwatch.ElapsedMilliseconds}ms.");
+            Log($"Overlay show starting at {stopwatch.ElapsedMilliseconds}ms.");
             var rect = await _selectionProvider(snapshotSession.MonitorSnapshots);
             if (rect is null)
             {
@@ -54,9 +54,11 @@ public sealed class SnapshotCoordinator
             }
 
             var selectedRect = rect.Value;
+            Log($"Selection completed at {stopwatch.ElapsedMilliseconds}ms.");
             Log($"Snapshot selection: x={selectedRect.X}, y={selectedRect.Y}, w={selectedRect.Width}, h={selectedRect.Height}");
             var selectionInVirtualCapture = SnapshotSelectionMapper.ToVirtualCaptureRect(selectedRect, snapshotSession.VirtualScreenBounds);
             var capture = _captureService.Crop(snapshotSession.VirtualCapture, selectionInVirtualCapture);
+            Log($"Final crop completed in {stopwatch.ElapsedMilliseconds}ms.");
             _onCaptureReady(capture);
         }
         catch (Exception ex)
@@ -82,8 +84,9 @@ public sealed class SnapshotCoordinator
 
     private SnapshotSession CaptureSnapshotSession()
     {
+        var stopwatch = Stopwatch.StartNew();
         var monitorBounds = _monitorBoundsProvider();
-        Log($"Monitor enumeration completed; monitorCount={monitorBounds.Count}.");
+        Log($"Monitor enumeration completed in {stopwatch.ElapsedMilliseconds}ms; monitorCount={monitorBounds.Count}.");
         var virtualScreenBounds = GetVirtualScreenBounds(monitorBounds);
         var virtualScreenRect = new Rect(
             virtualScreenBounds.Left,
@@ -91,7 +94,7 @@ public sealed class SnapshotCoordinator
             virtualScreenBounds.Width,
             virtualScreenBounds.Height);
         var virtualCapture = _captureService.Capture(virtualScreenRect);
-        Log($"Virtual screen capture completed; bounds={virtualScreenBounds}.");
+        Log($"Raw desktop capture completed in {stopwatch.ElapsedMilliseconds}ms; bounds={virtualScreenBounds}.");
         var monitorSnapshots = new List<MonitorSnapshot>();
 
         foreach (var bounds in monitorBounds)
@@ -103,6 +106,7 @@ public sealed class SnapshotCoordinator
             monitorSnapshots.Add(new MonitorSnapshot(bounds, monitorCapture));
         }
 
+        Log($"Monitor snapshot preparation stage finished in {stopwatch.ElapsedMilliseconds}ms.");
         return new SnapshotSession(virtualScreenBounds, virtualCapture, monitorSnapshots);
     }
 

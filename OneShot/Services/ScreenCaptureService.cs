@@ -22,8 +22,8 @@ public sealed class ScreenCaptureService
 
         try
         {
-            byte[] bytes = _backend.CapturePng(x, y, width, height);
-            return new CapturedImage(bytes, DateTimeOffset.UtcNow, width, height);
+            var bitmap = _backend.CaptureBitmap(x, y, width, height);
+            return CapturedImage.FromBitmap(bitmap, DateTimeOffset.UtcNow);
         }
         catch (Exception ex)
         {
@@ -58,9 +58,8 @@ public sealed class ScreenCaptureService
 
         try
         {
-            using var sourceBitmap = SKBitmap.Decode(source.PngBytes)
-                ?? throw new InvalidOperationException("Failed to decode source image for cropping.");
-            using var croppedBitmap = new SKBitmap(cropWidth, cropHeight, sourceBitmap.ColorType, sourceBitmap.AlphaType);
+            var sourceBitmap = source.AsSkBitmap();
+            var croppedBitmap = new SKBitmap(cropWidth, cropHeight, sourceBitmap.ColorType, sourceBitmap.AlphaType);
             using (var canvas = new SKCanvas(croppedBitmap))
             {
                 canvas.DrawBitmap(
@@ -69,9 +68,7 @@ public sealed class ScreenCaptureService
                     new SKRect(0, 0, cropWidth, cropHeight));
             }
 
-            using var image = SKImage.FromBitmap(croppedBitmap);
-            using var data = image.Encode(SKEncodedImageFormat.Png, 100);
-            return new CapturedImage(data.ToArray(), DateTimeOffset.UtcNow, cropWidth, cropHeight);
+            return CapturedImage.FromBitmap(croppedBitmap, DateTimeOffset.UtcNow);
         }
         catch (Exception ex)
         {
