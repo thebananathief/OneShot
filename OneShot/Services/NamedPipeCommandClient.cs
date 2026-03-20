@@ -5,7 +5,7 @@ using OneShot.Models;
 
 namespace OneShot.Services;
 
-public sealed class NamedPipeCommandClient : IDisposable
+internal sealed class NamedPipeCommandClient : IDisposable
 {
     private const int ConnectTimeoutMs = 100;
     private const int MaxAttempts = 6;
@@ -13,18 +13,25 @@ public sealed class NamedPipeCommandClient : IDisposable
     private const int RetryDelayStepMs = 20;
     private readonly string _pipeName;
     private readonly Action<string>? _log;
+    private readonly SnapshotTraceRecorder? _traceRecorder;
 
-    public NamedPipeCommandClient(string? pipeName = null, Action<string>? log = null)
+    public NamedPipeCommandClient(SnapshotTraceRecorder? traceRecorder = null, string? pipeName = null, Action<string>? log = null)
     {
         _pipeName = string.IsNullOrWhiteSpace(pipeName) ? NamedPipeCommandServer.DefaultPipeName : pipeName;
+        _traceRecorder = traceRecorder;
         _log = log;
     }
 
     public async Task SendAsync(AppCommand command, CancellationToken cancellationToken = default)
     {
-        if (command == AppCommand.None)
+        await SendAsync(AppCommandEnvelope.Create(command), cancellationToken);
+    }
+
+    public async Task SendAsync(AppCommandEnvelope envelope, CancellationToken cancellationToken = default)
+    {
+        if (envelope.Command == AppCommand.None)
         {
-            throw new ArgumentOutOfRangeException(nameof(command), "Cannot send a no-op command.");
+            throw new ArgumentOutOfRangeException(nameof(envelope), "Cannot send a no-op command.");
         }
 
         var stopwatch = Stopwatch.StartNew();
@@ -36,11 +43,14 @@ public sealed class NamedPipeCommandClient : IDisposable
             try
             {
                 using var client = new NamedPipeClientStream(".", _pipeName, PipeDirection.Out);
-                Log($"Named pipe send attempt {attempt}/{MaxAttempts} for '{command}' started at {stopwatch.ElapsedMilliseconds}ms.");
+                _traceRecorder?.Record(envelope.InvocationId, "pipe_connect_start", stopwatch.ElapsedMilliseconds, new { Attempt = attempt });
+                Log($"Named pipe send attempt {attempt}/{MaxAttempts} for '{envelope.Command}' started at {stopwatch.ElapsedMilliseconds}ms.");
                 await client.ConnectAsync(ConnectTimeoutMs, cancellationToken);
+                _traceRecorder?.Record(envelope.InvocationId, "pipe_connect_complete", stopwatch.ElapsedMilliseconds, new { Attempt = attempt });
                 using var writer = new StreamWriter(client) { AutoFlush = true };
-                await writer.WriteLineAsync(command.ToString());
-                Log($"Named pipe send for '{command}' completed in {stopwatch.ElapsedMilliseconds}ms.");
+                await writer.WriteLineAsync(envelope.ToPayload());
+                _traceRecorder?.Record(envelope.InvocationId, "pipe_send_complete", stopwatch.ElapsedMilliseconds);
+                Log($"Named pipe send for '{envelope.Command}' completed in {stopwatch.ElapsedMilliseconds}ms.");
                 return;
             }
             catch (OperationCanceledException)
@@ -60,7 +70,7 @@ public sealed class NamedPipeCommandClient : IDisposable
         }
 
         throw new IOException(
-            $"Failed to send '{command}' to pipe '{_pipeName}' after {MaxAttempts} attempts in {stopwatch.ElapsedMilliseconds}ms.",
+            $"Failed to send '{envelope.Command}' to pipe '{_pipeName}' after {MaxAttempts} attempts in {stopwatch.ElapsedMilliseconds}ms.",
             lastError);
     }
 

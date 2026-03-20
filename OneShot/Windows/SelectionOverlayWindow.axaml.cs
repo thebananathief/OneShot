@@ -19,7 +19,11 @@ public partial class SelectionOverlayWindow : Window, ISelectionOverlaySurface
         ApplyMonitorBoundsAndAlignClientOrigin();
 
         PointerPressed += OnPointerPressed;
-        Opened += (_, _) => ApplyMonitorBoundsAndAlignClientOrigin();
+        Opened += (_, _) =>
+        {
+            ApplyMonitorBoundsAndAlignClientOrigin();
+            SurfaceOpened?.Invoke(this, EventArgs.Empty);
+        };
         ScalingChanged += (_, _) => ApplyMonitorBoundsAndAlignClientOrigin();
         Closed += (_, _) => SurfaceClosed?.Invoke(this, EventArgs.Empty);
     }
@@ -29,6 +33,8 @@ public partial class SelectionOverlayWindow : Window, ISelectionOverlaySurface
     public event EventHandler? CancelRequested;
 
     public event EventHandler? SurfaceClosed;
+
+    public event EventHandler? SurfaceOpened;
 
     private void OnPointerPressed(object? sender, PointerPressedEventArgs e)
     {

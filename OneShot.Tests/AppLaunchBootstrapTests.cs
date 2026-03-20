@@ -8,20 +8,23 @@ public sealed class AppLaunchBootstrapTests
     [Fact]
     public async Task InitializeAsync_ForwardsSnapshot_ForSecondaryInstance()
     {
-        AppCommand? forwardedCommand = null;
+        AppCommandEnvelope? forwardedEnvelope = null;
 
         using var launchContext = await AppLaunchBootstrap.InitializeAsync(
             new[] { "snapshot" },
             mutexFactory: () => new MutexAcquisition(new Mutex(), false),
-            commandForwarder: (command, _) =>
+            commandForwarder: (envelope, _) =>
             {
-                forwardedCommand = command;
+                forwardedEnvelope = envelope;
                 return Task.CompletedTask;
             });
 
         launchContext.ShouldStartApp.Should().BeFalse();
-        launchContext.InitialCommand.Should().Be(AppCommand.Snapshot);
-        forwardedCommand.Should().Be(AppCommand.Snapshot);
+        launchContext.InitialEnvelope.Should().NotBeNull();
+        launchContext.InitialEnvelope!.Command.Should().Be(AppCommand.Snapshot);
+        forwardedEnvelope.Should().NotBeNull();
+        forwardedEnvelope!.Command.Should().Be(AppCommand.Snapshot);
+        forwardedEnvelope.InvocationId.Should().NotBeNullOrWhiteSpace();
     }
 
     [Fact]
@@ -39,7 +42,7 @@ public sealed class AppLaunchBootstrapTests
             });
 
         launchContext.ShouldStartApp.Should().BeFalse();
-        launchContext.InitialCommand.Should().Be(AppCommand.None);
+        launchContext.InitialEnvelope.Should().BeNull();
         forwarded.Should().BeFalse();
     }
 
@@ -52,6 +55,7 @@ public sealed class AppLaunchBootstrapTests
             commandForwarder: (_, _) => Task.CompletedTask);
 
         launchContext.ShouldStartApp.Should().BeTrue();
-        launchContext.InitialCommand.Should().Be(AppCommand.Snapshot);
+        launchContext.InitialEnvelope.Should().NotBeNull();
+        launchContext.InitialEnvelope!.Command.Should().Be(AppCommand.Snapshot);
     }
 }

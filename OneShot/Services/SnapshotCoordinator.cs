@@ -11,7 +11,7 @@ public sealed class SnapshotCoordinator
     private readonly SemaphoreSlim _snapshotGate = new(1, 1);
     private readonly Action<CapturedImage> _onCaptureReady;
     private readonly Func<IReadOnlyList<System.Drawing.Rectangle>> _monitorBoundsProvider;
-    private readonly Func<IReadOnlyList<MonitorSnapshot>, Task<Rect?>> _selectionProvider;
+    private readonly Func<string, IReadOnlyList<MonitorSnapshot>, Action<string, string, long, object?>?, Task<Rect?>> _selectionProvider;
     private readonly Action<string>? _log;
 
     public SnapshotCoordinator(ScreenCaptureService captureService, Action<CapturedImage> onCaptureReady, Action<string>? log = null)
@@ -24,7 +24,7 @@ public sealed class SnapshotCoordinator
         Action<CapturedImage> onCaptureReady,
         Action<string>? log,
         Func<IReadOnlyList<System.Drawing.Rectangle>> monitorBoundsProvider,
-        Func<IReadOnlyList<MonitorSnapshot>, Task<Rect?>> selectionProvider)
+        Func<string, IReadOnlyList<MonitorSnapshot>, Action<string, string, long, object?>?, Task<Rect?>> selectionProvider)
     {
         _captureService = captureService;
         _onCaptureReady = onCaptureReady;
@@ -33,7 +33,7 @@ public sealed class SnapshotCoordinator
         _selectionProvider = selectionProvider;
     }
 
-    public async Task StartSnapshotAsync()
+    public async Task StartSnapshotAsync(string invocationId, Action<string, string, long, object?>? trace = null)
     {
         if (!await _snapshotGate.WaitAsync(0))
         {
@@ -44,20 +44,23 @@ public sealed class SnapshotCoordinator
         try
         {
             Log("StartSnapshotAsync entered.");
-            var snapshotSession = CaptureSnapshotSession();
+            var snapshotSession = CaptureSnapshotSession(invocationId, trace);
             Log($"Monitor snapshot preparation completed in {stopwatch.ElapsedMilliseconds}ms.");
+            trace?.Invoke(invocationId, "selection_session_start", stopwatch.ElapsedMilliseconds, new { MonitorCount = snapshotSession.MonitorSnapshots.Count });
             Log($"Overlay show starting at {stopwatch.ElapsedMilliseconds}ms.");
-            var rect = await _selectionProvider(snapshotSession.MonitorSnapshots);
+            var rect = await _selectionProvider(invocationId, snapshotSession.MonitorSnapshots, trace);
             if (rect is null)
             {
                 return;
             }
 
             var selectedRect = rect.Value;
+            trace?.Invoke(invocationId, "selection_complete", stopwatch.ElapsedMilliseconds, new { selectedRect.X, selectedRect.Y, selectedRect.Width, selectedRect.Height });
             Log($"Selection completed at {stopwatch.ElapsedMilliseconds}ms.");
             Log($"Snapshot selection: x={selectedRect.X}, y={selectedRect.Y}, w={selectedRect.Width}, h={selectedRect.Height}");
             var selectionInVirtualCapture = SnapshotSelectionMapper.ToVirtualCaptureRect(selectedRect, snapshotSession.VirtualScreenBounds);
             var capture = _captureService.Crop(snapshotSession.VirtualCapture, selectionInVirtualCapture);
+            trace?.Invoke(invocationId, "final_crop_complete", stopwatch.ElapsedMilliseconds, new { capture.PixelWidth, capture.PixelHeight });
             Log($"Final crop completed in {stopwatch.ElapsedMilliseconds}ms.");
             _onCaptureReady(capture);
         }
@@ -82,10 +85,11 @@ public sealed class SnapshotCoordinator
         Debug.WriteLine(message);
     }
 
-    private SnapshotSession CaptureSnapshotSession()
+    private SnapshotSession CaptureSnapshotSession(string invocationId, Action<string, string, long, object?>? trace)
     {
         var stopwatch = Stopwatch.StartNew();
         var monitorBounds = _monitorBoundsProvider();
+        trace?.Invoke(invocationId, "monitor_enumeration_complete", stopwatch.ElapsedMilliseconds, new { MonitorCount = monitorBounds.Count });
         Log($"Monitor enumeration completed in {stopwatch.ElapsedMilliseconds}ms; monitorCount={monitorBounds.Count}.");
         var virtualScreenBounds = GetVirtualScreenBounds(monitorBounds);
         var virtualScreenRect = new Rect(
@@ -93,8 +97,11 @@ public sealed class SnapshotCoordinator
             virtualScreenBounds.Top,
             virtualScreenBounds.Width,
             virtualScreenBounds.Height);
+        trace?.Invoke(invocationId, "virtual_capture_start", stopwatch.ElapsedMilliseconds, new { virtualScreenBounds.Left, virtualScreenBounds.Top, virtualScreenBounds.Width, virtualScreenBounds.Height });
         var virtualCapture = _captureService.Capture(virtualScreenRect);
+        trace?.Invoke(invocationId, "virtual_capture_complete", stopwatch.ElapsedMilliseconds, new { virtualCapture.PixelWidth, virtualCapture.PixelHeight });
         Log($"Raw desktop capture completed in {stopwatch.ElapsedMilliseconds}ms; bounds={virtualScreenBounds}.");
+        trace?.Invoke(invocationId, "monitor_snapshot_prepare_start", stopwatch.ElapsedMilliseconds, new { MonitorCount = monitorBounds.Count });
         var monitorSnapshots = new List<MonitorSnapshot>();
 
         foreach (var bounds in monitorBounds)
@@ -106,6 +113,7 @@ public sealed class SnapshotCoordinator
             monitorSnapshots.Add(new MonitorSnapshot(bounds, monitorCapture));
         }
 
+        trace?.Invoke(invocationId, "monitor_snapshot_prepare_complete", stopwatch.ElapsedMilliseconds, new { MonitorCount = monitorSnapshots.Count });
         Log($"Monitor snapshot preparation stage finished in {stopwatch.ElapsedMilliseconds}ms.");
         return new SnapshotSession(virtualScreenBounds, virtualCapture, monitorSnapshots);
     }
@@ -120,9 +128,9 @@ public sealed class SnapshotCoordinator
         return monitorBounds.Aggregate(System.Drawing.Rectangle.Union);
     }
 
-    private static Task<Rect?> CreateSelectionSessionAsync(IReadOnlyList<MonitorSnapshot> monitorSnapshots)
+    private static Task<Rect?> CreateSelectionSessionAsync(string invocationId, IReadOnlyList<MonitorSnapshot> monitorSnapshots, Action<string, string, long, object?>? trace)
     {
-        var overlaySession = new MultiMonitorSelectionSession(monitorSnapshots);
+        var overlaySession = new MultiMonitorSelectionSession(monitorSnapshots, invocationId: invocationId, trace: trace);
         return overlaySession.GetSelectionAsync();
     }
 

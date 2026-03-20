@@ -11,10 +11,16 @@ internal static class Program
     public static void Main(string[] args)
     {
         var stopwatch = Stopwatch.StartNew();
+        var traceRecorder = new SnapshotTraceRecorder("helper");
         Debug.WriteLine($"OneShot process starting; args='{string.Join(' ', args)}'.");
         DpiAwareness.EnablePerMonitorV2();
-        using var launchContext = AppLaunchBootstrap.InitializeAsync(args, message => Debug.WriteLine(message)).GetAwaiter().GetResult();
+        using var launchContext = AppLaunchBootstrap.InitializeAsync(args, traceRecorder, message => Debug.WriteLine(message)).GetAwaiter().GetResult();
         Debug.WriteLine($"Launch arbitration completed in {stopwatch.ElapsedMilliseconds}ms; shouldStartApp={launchContext.ShouldStartApp}.");
+        if (launchContext.InitialEnvelope is not null)
+        {
+            traceRecorder.Record(launchContext.InitialEnvelope.InvocationId, "dpi_awareness_complete", stopwatch.ElapsedMilliseconds);
+            traceRecorder.Record(launchContext.InitialEnvelope.InvocationId, "helper_exit", stopwatch.ElapsedMilliseconds, new { launchContext.ShouldStartApp });
+        }
         if (!launchContext.ShouldStartApp)
         {
             return;

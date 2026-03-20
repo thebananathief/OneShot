@@ -6,6 +6,7 @@ namespace OneShot.Services;
 internal static class AppLaunchBootstrap
 {
     internal const string MutexName = "OneShot.Singleton.v1";
+    private static AppCommandEnvelope? _pendingInitialEnvelope;
 
     internal static AppCommand ParseCommand(string[] args)
     {
@@ -23,28 +24,42 @@ internal static class AppLaunchBootstrap
 
     internal static async Task<AppLaunchContext> InitializeAsync(
         string[] args,
+        SnapshotTraceRecorder? traceRecorder = null,
         Action<string>? log = null,
         Func<MutexAcquisition>? mutexFactory = null,
-        Func<AppCommand, CancellationToken, Task>? commandForwarder = null,
+        Func<AppCommandEnvelope, CancellationToken, Task>? commandForwarder = null,
         CancellationToken cancellationToken = default)
     {
         var stopwatch = Stopwatch.StartNew();
         var command = ParseCommand(args);
+        var envelope = command == AppCommand.None ? null : AppCommandEnvelope.Create(command);
+        if (envelope is not null)
+        {
+            traceRecorder?.Record(envelope.InvocationId, "process_start", 0, new { Args = args });
+            traceRecorder?.Record(envelope.InvocationId, "command_parsed", stopwatch.ElapsedMilliseconds, new { Command = envelope.Command.ToString() });
+        }
+
         var acquisition = (mutexFactory ?? AcquireMutex)();
         Log(log, $"Launch command '{command}' parsed; primary={acquisition.IsPrimary}; elapsed={stopwatch.ElapsedMilliseconds}ms.");
+        if (envelope is not null)
+        {
+            traceRecorder?.Record(envelope.InvocationId, "mutex_arbitration_complete", stopwatch.ElapsedMilliseconds, new { acquisition.IsPrimary });
+        }
 
         if (acquisition.IsPrimary)
         {
-            return AppLaunchContext.Primary(acquisition.InstanceMutex, command);
+            _pendingInitialEnvelope = envelope;
+            return AppLaunchContext.Primary(acquisition.InstanceMutex, envelope);
         }
 
         try
         {
-            if (command != AppCommand.None)
+            if (envelope is not null)
             {
-                var forwardAsync = commandForwarder ?? ((appCommand, token) => ForwardCommandAsync(appCommand, log, token));
-                await forwardAsync(command, cancellationToken);
-                Log(log, $"Secondary instance forwarded '{command}' in {stopwatch.ElapsedMilliseconds}ms.");
+                traceRecorder?.Record(envelope.InvocationId, "forward_start", stopwatch.ElapsedMilliseconds);
+                var forwardAsync = commandForwarder ?? ((appCommandEnvelope, token) => ForwardCommandAsync(appCommandEnvelope, traceRecorder, log, token));
+                await forwardAsync(envelope, cancellationToken);
+                Log(log, $"Secondary instance forwarded '{envelope.Command}' in {stopwatch.ElapsedMilliseconds}ms.");
             }
             else
             {
@@ -56,7 +71,7 @@ internal static class AppLaunchBootstrap
             acquisition.InstanceMutex?.Dispose();
         }
 
-        return AppLaunchContext.Secondary(command);
+        return AppLaunchContext.Secondary(envelope);
     }
 
     private static MutexAcquisition AcquireMutex()
@@ -65,10 +80,10 @@ internal static class AppLaunchBootstrap
         return new MutexAcquisition(instanceMutex, isPrimary);
     }
 
-    private static async Task ForwardCommandAsync(AppCommand command, Action<string>? log, CancellationToken cancellationToken)
+    private static async Task ForwardCommandAsync(AppCommandEnvelope envelope, SnapshotTraceRecorder? traceRecorder, Action<string>? log, CancellationToken cancellationToken)
     {
-        using var client = new NamedPipeCommandClient(log: log);
-        await client.SendAsync(command, cancellationToken);
+        using var client = new NamedPipeCommandClient(traceRecorder, log: log);
+        await client.SendAsync(envelope, cancellationToken);
     }
 
     private static void Log(Action<string>? log, string message)
@@ -81,6 +96,13 @@ internal static class AppLaunchBootstrap
 
         Debug.WriteLine(message);
     }
+
+    internal static AppCommandEnvelope? ConsumeInitialEnvelope()
+    {
+        var envelope = _pendingInitialEnvelope;
+        _pendingInitialEnvelope = null;
+        return envelope;
+    }
 }
 
 internal readonly record struct MutexAcquisition(Mutex? InstanceMutex, bool IsPrimary);
@@ -89,25 +111,25 @@ internal sealed class AppLaunchContext : IDisposable
 {
     private readonly Mutex? _instanceMutex;
 
-    private AppLaunchContext(Mutex? instanceMutex, AppCommand initialCommand, bool shouldStartApp)
+    private AppLaunchContext(Mutex? instanceMutex, AppCommandEnvelope? initialEnvelope, bool shouldStartApp)
     {
         _instanceMutex = instanceMutex;
-        InitialCommand = initialCommand;
+        InitialEnvelope = initialEnvelope;
         ShouldStartApp = shouldStartApp;
     }
 
-    public AppCommand InitialCommand { get; }
+    public AppCommandEnvelope? InitialEnvelope { get; }
 
     public bool ShouldStartApp { get; }
 
-    public static AppLaunchContext Primary(Mutex? instanceMutex, AppCommand initialCommand)
+    public static AppLaunchContext Primary(Mutex? instanceMutex, AppCommandEnvelope? initialEnvelope)
     {
-        return new AppLaunchContext(instanceMutex, initialCommand, shouldStartApp: true);
+        return new AppLaunchContext(instanceMutex, initialEnvelope, shouldStartApp: true);
     }
 
-    public static AppLaunchContext Secondary(AppCommand initialCommand)
+    public static AppLaunchContext Secondary(AppCommandEnvelope? initialEnvelope)
     {
-        return new AppLaunchContext(instanceMutex: null, initialCommand, shouldStartApp: false);
+        return new AppLaunchContext(instanceMutex: null, initialEnvelope, shouldStartApp: false);
     }
 
     public void Dispose()

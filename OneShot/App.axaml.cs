@@ -14,12 +14,15 @@ namespace OneShot;
 public partial class App : Application
 {
     private readonly Stopwatch _startupStopwatch = Stopwatch.StartNew();
+    private readonly SnapshotTraceRecorder _traceRecorder = new("daemon");
+    private readonly Dictionary<string, Stopwatch> _invocationStopwatches = new();
     private NotifyIcon? _trayIcon;
     private NamedPipeCommandServer? _commandServer;
     private OutputService? _outputService;
     private SnapshotCoordinator? _snapshotCoordinator;
     private NotificationCoordinator? _notificationCoordinator;
     private IClassicDesktopStyleApplicationLifetime? _desktop;
+    private AppCommandEnvelope? _initialEnvelope;
 
     public override void Initialize()
     {
@@ -42,10 +45,23 @@ public partial class App : Application
     private async Task InitializeAsync(string[] args)
     {
         Log($"App initialization started at {_startupStopwatch.ElapsedMilliseconds}ms.");
+        _initialEnvelope = AppLaunchBootstrap.ConsumeInitialEnvelope();
+        if (_initialEnvelope is null && AppLaunchBootstrap.ParseCommand(args) == AppCommand.Snapshot)
+        {
+            _initialEnvelope = AppCommandEnvelope.Create(AppCommand.Snapshot);
+        }
         _outputService = new OutputService();
         var captureService = new ScreenCaptureService();
         _notificationCoordinator = new NotificationCoordinator(_outputService);
-        _snapshotCoordinator = new SnapshotCoordinator(captureService, _notificationCoordinator.ShowNotification, Log);
+        _snapshotCoordinator = new SnapshotCoordinator(captureService, image =>
+        {
+            _notificationCoordinator.ShowNotification(image);
+            var invocationId = _activeInvocationId;
+            if (!string.IsNullOrWhiteSpace(invocationId))
+            {
+                RecordDaemonTrace(invocationId, "capture_ready_callback_complete");
+            }
+        }, Log);
 
         _commandServer = new NamedPipeCommandServer(log: Log);
         _commandServer.CommandReceived += async (_, command) => await OnCommandAsync(command);
@@ -61,7 +77,11 @@ public partial class App : Application
         if (args.Length > 0 && args[0].Equals("snapshot", StringComparison.OrdinalIgnoreCase))
         {
             Log($"Initial snapshot command dispatching at {_startupStopwatch.ElapsedMilliseconds}ms.");
-            await Dispatcher.UIThread.InvokeAsync(StartSnapshotFromUiAsync);
+            var envelope = _initialEnvelope ?? AppCommandEnvelope.Create(AppCommand.Snapshot);
+            StartInvocationTrace(envelope);
+            RecordDaemonTrace(envelope.InvocationId, "daemon_ui_dispatch_start", new { Source = "startup" });
+            await Dispatcher.UIThread.InvokeAsync(() => StartSnapshotFromUiAsync(envelope));
+            RecordDaemonTrace(envelope.InvocationId, "daemon_ui_dispatch_complete", new { Source = "startup" });
         }
     }
 
@@ -84,30 +104,87 @@ public partial class App : Application
         };
 
         var menu = new ContextMenuStrip();
-        menu.Items.Add("Take Snapshot", null, (_, _) => _ = Dispatcher.UIThread.InvokeAsync(StartSnapshotFromUiAsync));
+        menu.Items.Add("Take Snapshot", null, (_, _) =>
+        {
+            var envelope = AppCommandEnvelope.Create(AppCommand.Snapshot);
+            StartInvocationTrace(envelope);
+            RecordDaemonTrace(envelope.InvocationId, "daemon_ui_dispatch_start", new { Source = "tray_menu" });
+            _ = Dispatcher.UIThread.InvokeAsync(async () =>
+            {
+                await StartSnapshotFromUiAsync(envelope);
+                RecordDaemonTrace(envelope.InvocationId, "daemon_ui_dispatch_complete", new { Source = "tray_menu" });
+            });
+        });
         menu.Items.Add("Exit", null, (_, _) => Dispatcher.UIThread.Post(() => _desktop?.Shutdown()));
         _trayIcon.ContextMenuStrip = menu;
-        _trayIcon.DoubleClick += (_, _) => _ = Dispatcher.UIThread.InvokeAsync(StartSnapshotFromUiAsync);
+        _trayIcon.DoubleClick += (_, _) =>
+        {
+            var envelope = AppCommandEnvelope.Create(AppCommand.Snapshot);
+            StartInvocationTrace(envelope);
+            RecordDaemonTrace(envelope.InvocationId, "daemon_ui_dispatch_start", new { Source = "tray_double_click" });
+            _ = Dispatcher.UIThread.InvokeAsync(async () =>
+            {
+                await StartSnapshotFromUiAsync(envelope);
+                RecordDaemonTrace(envelope.InvocationId, "daemon_ui_dispatch_complete", new { Source = "tray_double_click" });
+            });
+        };
     }
 
-    private async Task OnCommandAsync(AppCommand command)
+    private string? _activeInvocationId;
+
+    private async Task OnCommandAsync(AppCommandEnvelope envelope)
     {
-        if (command == AppCommand.Snapshot)
+        if (envelope.Command == AppCommand.Snapshot)
         {
             Log($"Snapshot command received at {_startupStopwatch.ElapsedMilliseconds}ms; dispatching to UI thread.");
-            await Dispatcher.UIThread.InvokeAsync(StartSnapshotFromUiAsync);
+            StartInvocationTrace(envelope);
+            RecordDaemonTrace(envelope.InvocationId, "daemon_command_received");
+            RecordDaemonTrace(envelope.InvocationId, "daemon_ui_dispatch_start", new { Source = "pipe" });
+            await Dispatcher.UIThread.InvokeAsync(() => StartSnapshotFromUiAsync(envelope));
+            RecordDaemonTrace(envelope.InvocationId, "daemon_ui_dispatch_complete", new { Source = "pipe" });
         }
     }
 
-    private async Task StartSnapshotFromUiAsync()
+    private async Task StartSnapshotFromUiAsync(AppCommandEnvelope envelope)
     {
         if (_snapshotCoordinator is null)
         {
             return;
         }
 
+        _activeInvocationId = envelope.InvocationId;
         Log($"StartSnapshotFromUiAsync entered at {_startupStopwatch.ElapsedMilliseconds}ms.");
-        await _snapshotCoordinator.StartSnapshotAsync();
+        RecordDaemonTrace(envelope.InvocationId, "start_snapshot_entered");
+        try
+        {
+            await _snapshotCoordinator.StartSnapshotAsync(envelope.InvocationId, RecordSnapshotPhase);
+        }
+        finally
+        {
+            _invocationStopwatches.Remove(envelope.InvocationId);
+            if (_activeInvocationId == envelope.InvocationId)
+            {
+                _activeInvocationId = null;
+            }
+        }
+    }
+
+    private void RecordSnapshotPhase(string invocationId, string phase, long elapsedMs, object? details)
+    {
+        _traceRecorder.Record(invocationId, phase, elapsedMs, details);
+    }
+
+    private void StartInvocationTrace(AppCommandEnvelope envelope)
+    {
+        _invocationStopwatches[envelope.InvocationId] = Stopwatch.StartNew();
+    }
+
+    private void RecordDaemonTrace(string invocationId, string phase, object? details = null)
+    {
+        if (_invocationStopwatches.TryGetValue(invocationId, out var stopwatch))
+        {
+            _traceRecorder.Record(invocationId, phase, stopwatch.ElapsedMilliseconds, details);
+        }
     }
 
     private static void Log(string message)

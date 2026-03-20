@@ -19,6 +19,10 @@ internal sealed class MultiMonitorSelectionSession
     private readonly NativeMethods.LowLevelKeyboardProc _keyboardProc;
     private readonly NativeMethods.LowLevelMouseProc _mouseProc;
     private readonly Action<string>? _log;
+    private readonly string _invocationId;
+    private readonly Action<string, string, long, object?>? _trace;
+    private readonly bool _installSystemHooks;
+    private readonly Stopwatch _stopwatch = Stopwatch.StartNew();
 
     private nint _keyboardHook;
     private nint _mouseHook;
@@ -27,14 +31,24 @@ internal sealed class MultiMonitorSelectionSession
     private bool _started;
     private bool _isFinishing;
     private bool _isDragging;
+    private int _openedSurfaceCount;
 
-    public MultiMonitorSelectionSession(IReadOnlyList<MonitorSnapshot> monitorSnapshots, Func<MonitorSnapshot, ISelectionOverlaySurface>? surfaceFactory = null, Action<string>? log = null)
+    public MultiMonitorSelectionSession(
+        IReadOnlyList<MonitorSnapshot> monitorSnapshots,
+        Func<MonitorSnapshot, ISelectionOverlaySurface>? surfaceFactory = null,
+        Action<string>? log = null,
+        string invocationId = "",
+        Action<string, string, long, object?>? trace = null,
+        bool installSystemHooks = true)
     {
         _monitorSnapshots = monitorSnapshots;
         _surfaceFactory = surfaceFactory ?? (snapshot => new SelectionOverlayWindow(snapshot.Image, snapshot.Bounds));
         _keyboardProc = OnLowLevelKeyboard;
         _mouseProc = OnLowLevelMouse;
         _log = log;
+        _invocationId = invocationId;
+        _trace = trace;
+        _installSystemHooks = installSystemHooks;
     }
 
     public Task<Rect?> GetSelectionAsync()
@@ -53,21 +67,39 @@ internal sealed class MultiMonitorSelectionSession
 
         foreach (var snapshot in _monitorSnapshots)
         {
+            Trace("overlay_surface_create_start", new { snapshot.Bounds.Left, snapshot.Bounds.Top, snapshot.Bounds.Width, snapshot.Bounds.Height });
             var surface = _surfaceFactory(snapshot);
             surface.DragStarted += OnDragStarted;
             surface.CancelRequested += OnCancelRequested;
             surface.SurfaceClosed += OnSurfaceClosed;
+            surface.SurfaceOpened += OnSurfaceOpened;
             _surfaces.Add(surface);
+            Trace("overlay_surface_create_complete", new { snapshot.Bounds.Left, snapshot.Bounds.Top, snapshot.Bounds.Width, snapshot.Bounds.Height });
         }
 
-        InstallEscapeHook();
-        InstallMouseHook();
+        if (_installSystemHooks)
+        {
+            InstallEscapeHook();
+            InstallMouseHook();
+        }
+
         foreach (var surface in _surfaces)
         {
+            Trace("overlay_show_start", new { SurfaceIndex = _surfaces.IndexOf(surface) });
             surface.Show();
         }
 
         return _selectionTcs.Task;
+    }
+
+    private void OnSurfaceOpened(object? sender, EventArgs e)
+    {
+        _openedSurfaceCount++;
+        Trace("overlay_surface_opened", new { OpenedCount = _openedSurfaceCount, Total = _surfaces.Count });
+        if (_openedSurfaceCount == _surfaces.Count)
+        {
+            Trace("all_overlays_opened", new { Total = _surfaces.Count });
+        }
     }
 
     private void OnDragStarted(object? sender, PixelPoint cursorPosition)
@@ -152,6 +184,7 @@ internal sealed class MultiMonitorSelectionSession
             surface.DragStarted -= OnDragStarted;
             surface.CancelRequested -= OnCancelRequested;
             surface.SurfaceClosed -= OnSurfaceClosed;
+            surface.SurfaceOpened -= OnSurfaceOpened;
             if (surface.IsVisible)
             {
                 surface.Close();
@@ -276,6 +309,16 @@ internal sealed class MultiMonitorSelectionSession
         }
 
         Debug.WriteLine(message);
+    }
+
+    private void Trace(string phase, object? details = null)
+    {
+        if (string.IsNullOrWhiteSpace(_invocationId))
+        {
+            return;
+        }
+
+        _trace?.Invoke(_invocationId, phase, _stopwatch.ElapsedMilliseconds, details);
     }
 
     private static class NativeMethods

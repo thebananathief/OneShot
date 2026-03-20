@@ -5,14 +5,14 @@ using OneShot.Models;
 
 namespace OneShot.Services;
 
-public sealed class NamedPipeCommandServer : IDisposable
+internal sealed class NamedPipeCommandServer : IDisposable
 {
     public const string DefaultPipeName = "OneShot.Command.v1";
     private readonly CancellationTokenSource _cts = new();
     private readonly string _pipeName;
     private readonly Action<string>? _log;
 
-    public event EventHandler<AppCommand>? CommandReceived;
+    public event EventHandler<AppCommandEnvelope>? CommandReceived;
 
     public NamedPipeCommandServer(string? pipeName = null, Action<string>? log = null)
     {
@@ -108,9 +108,15 @@ public sealed class NamedPipeCommandServer : IDisposable
         }
 
         Log($"Received command payload '{line}'.");
+        if (AppCommandEnvelope.TryParse(line, out var envelope) && envelope is not null)
+        {
+            CommandReceived?.Invoke(this, envelope);
+            return;
+        }
+
         if (Enum.TryParse<AppCommand>(line, true, out var command) && command != AppCommand.None)
         {
-            CommandReceived?.Invoke(this, command);
+            CommandReceived?.Invoke(this, AppCommandEnvelope.CreateLegacy(command));
             return;
         }
 

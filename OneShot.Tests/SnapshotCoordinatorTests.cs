@@ -27,13 +27,13 @@ public sealed class SnapshotCoordinatorTests
             {
                 new System.Drawing.Rectangle(0, 0, 4, 3)
             },
-            selectionProvider: snapshots =>
+            selectionProvider: (_, snapshots, _) =>
             {
                 deliveredSnapshots = snapshots.ToArray();
                 return Task.FromResult<Rect?>(new Rect(1, 1, 2, 1));
             });
 
-        await coordinator.StartSnapshotAsync();
+        await coordinator.StartSnapshotAsync("test-invocation");
 
         var snapshots = deliveredSnapshots;
         var finalImage = deliveredImage;

@@ -10,6 +10,8 @@ internal interface ISelectionOverlaySurface
 
     event EventHandler? SurfaceClosed;
 
+    event EventHandler? SurfaceOpened;
+
     bool IsVisible { get; }
 
     void Show();
