@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using Avalonia;
 using System.Runtime.InteropServices;
+using OneShot.Services;
 
 namespace OneShot;
 
@@ -8,7 +10,16 @@ internal static class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        var stopwatch = Stopwatch.StartNew();
+        Debug.WriteLine($"OneShot process starting; args='{string.Join(' ', args)}'.");
         DpiAwareness.EnablePerMonitorV2();
+        using var launchContext = AppLaunchBootstrap.InitializeAsync(args, message => Debug.WriteLine(message)).GetAwaiter().GetResult();
+        Debug.WriteLine($"Launch arbitration completed in {stopwatch.ElapsedMilliseconds}ms; shouldStartApp={launchContext.ShouldStartApp}.");
+        if (!launchContext.ShouldStartApp)
+        {
+            return;
+        }
+
         BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
     }
 

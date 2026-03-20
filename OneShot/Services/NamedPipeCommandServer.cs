@@ -22,37 +22,99 @@ public sealed class NamedPipeCommandServer : IDisposable
 
     public async Task StartAsync()
     {
-        while (!_cts.Token.IsCancellationRequested)
+        NamedPipeServerStream? currentServer = null;
+        try
         {
-            try
+            currentServer = CreateServer();
+            Task waitForConnection = currentServer.WaitForConnectionAsync(_cts.Token);
+
+            while (!_cts.Token.IsCancellationRequested)
             {
-                using var server = new NamedPipeServerStream(_pipeName, PipeDirection.In, 1, PipeTransmissionMode.Message, PipeOptions.Asynchronous);
-                await server.WaitForConnectionAsync(_cts.Token);
-                using var reader = new StreamReader(server);
-                var line = await reader.ReadLineAsync(_cts.Token);
-                if (string.IsNullOrWhiteSpace(line))
+                try
                 {
-                    Log("Received empty command payload.");
+                    await waitForConnection;
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+
+                NamedPipeServerStream? nextServer = null;
+                Task? nextWaitForConnection = null;
+
+                try
+                {
+                    nextServer = CreateServer();
+                    nextWaitForConnection = nextServer.WaitForConnectionAsync(_cts.Token);
+                    await HandleConnectionAsync(currentServer, _cts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    nextServer?.Dispose();
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    nextServer?.Dispose();
+                    Log($"Named pipe server error: {ex}");
+                }
+                finally
+                {
+                    currentServer.Dispose();
+                }
+
+                if (nextServer is null || nextWaitForConnection is null)
+                {
+                    currentServer = CreateServer();
+                    waitForConnection = currentServer.WaitForConnectionAsync(_cts.Token);
                     continue;
                 }
 
-                if (Enum.TryParse<AppCommand>(line, true, out var command) && command != AppCommand.None)
-                {
-                    CommandReceived?.Invoke(this, command);
-                    continue;
-                }
-
-                Log($"Received invalid command payload: '{line}'.");
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                Log($"Named pipe server error: {ex}");
+                currentServer = nextServer;
+                waitForConnection = nextWaitForConnection;
             }
         }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Log($"Named pipe server error: {ex}");
+        }
+        finally
+        {
+            currentServer?.Dispose();
+        }
+    }
+
+    private NamedPipeServerStream CreateServer()
+    {
+        return new NamedPipeServerStream(
+            _pipeName,
+            PipeDirection.In,
+            NamedPipeServerStream.MaxAllowedServerInstances,
+            PipeTransmissionMode.Message,
+            PipeOptions.Asynchronous);
+    }
+
+    private async Task HandleConnectionAsync(NamedPipeServerStream server, CancellationToken cancellationToken)
+    {
+        using var reader = new StreamReader(server);
+        var line = await reader.ReadLineAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(line))
+        {
+            Log("Received empty command payload.");
+            return;
+        }
+
+        Log($"Received command payload '{line}'.");
+        if (Enum.TryParse<AppCommand>(line, true, out var command) && command != AppCommand.None)
+        {
+            CommandReceived?.Invoke(this, command);
+            return;
+        }
+
+        Log($"Received invalid command payload: '{line}'.");
     }
 
     public void Dispose()

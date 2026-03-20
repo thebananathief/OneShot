@@ -13,9 +13,7 @@ namespace OneShot;
 
 public partial class App : Application
 {
-    private const string MutexName = "OneShot.Singleton.v1";
-
-    private Mutex? _instanceMutex;
+    private readonly Stopwatch _startupStopwatch = Stopwatch.StartNew();
     private NotifyIcon? _trayIcon;
     private NamedPipeCommandServer? _commandServer;
     private OutputService? _outputService;
@@ -43,29 +41,26 @@ public partial class App : Application
 
     private async Task InitializeAsync(string[] args)
     {
-        _instanceMutex = new Mutex(true, MutexName, out bool isPrimary);
-        if (!isPrimary)
-        {
-            await ForwardCommandToPrimaryAsync(args);
-            _desktop?.Shutdown();
-            return;
-        }
-
+        Log($"App initialization started at {_startupStopwatch.ElapsedMilliseconds}ms.");
         _outputService = new OutputService();
         var captureService = new ScreenCaptureService();
         _notificationCoordinator = new NotificationCoordinator(_outputService);
         _snapshotCoordinator = new SnapshotCoordinator(captureService, _notificationCoordinator.ShowNotification, Log);
-        var startupService = new StartupService();
-        startupService.EnsureRunAtLogin();
-
-        InitializeTrayIcon();
 
         _commandServer = new NamedPipeCommandServer(log: Log);
         _commandServer.CommandReceived += async (_, command) => await OnCommandAsync(command);
         _ = _commandServer.StartAsync();
+        Log($"Named pipe server started at {_startupStopwatch.ElapsedMilliseconds}ms.");
+
+        var startupService = new StartupService();
+        startupService.EnsureRunAtLogin();
+
+        InitializeTrayIcon();
+        Log($"Tray initialization completed at {_startupStopwatch.ElapsedMilliseconds}ms.");
 
         if (args.Length > 0 && args[0].Equals("snapshot", StringComparison.OrdinalIgnoreCase))
         {
+            Log($"Initial snapshot command dispatching at {_startupStopwatch.ElapsedMilliseconds}ms.");
             await Dispatcher.UIThread.InvokeAsync(StartSnapshotFromUiAsync);
         }
     }
@@ -77,18 +72,6 @@ public partial class App : Application
         _notificationCoordinator?.CloseAll();
 
         _trayIcon?.Dispose();
-        if (_instanceMutex is not null)
-        {
-            try
-            {
-                _instanceMutex.ReleaseMutex();
-            }
-            catch
-            {
-            }
-
-            _instanceMutex.Dispose();
-        }
     }
 
     private void InitializeTrayIcon()
@@ -107,32 +90,11 @@ public partial class App : Application
         _trayIcon.DoubleClick += (_, _) => _ = Dispatcher.UIThread.InvokeAsync(StartSnapshotFromUiAsync);
     }
 
-    private async Task ForwardCommandToPrimaryAsync(string[] args)
-    {
-        if (args.Length == 0)
-        {
-            return;
-        }
-
-        var command = args[0].ToLowerInvariant() switch
-        {
-            "snapshot" => AppCommand.Snapshot,
-            _ => AppCommand.None
-        };
-
-        if (command == AppCommand.None)
-        {
-            return;
-        }
-
-        using var client = new NamedPipeCommandClient(log: Log);
-        await client.SendAsync(command);
-    }
-
     private async Task OnCommandAsync(AppCommand command)
     {
         if (command == AppCommand.Snapshot)
         {
+            Log($"Snapshot command received at {_startupStopwatch.ElapsedMilliseconds}ms; dispatching to UI thread.");
             await Dispatcher.UIThread.InvokeAsync(StartSnapshotFromUiAsync);
         }
     }
@@ -144,6 +106,7 @@ public partial class App : Application
             return;
         }
 
+        Log($"StartSnapshotFromUiAsync entered at {_startupStopwatch.ElapsedMilliseconds}ms.");
         await _snapshotCoordinator.StartSnapshotAsync();
     }
 
