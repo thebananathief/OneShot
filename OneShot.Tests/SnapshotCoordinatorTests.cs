@@ -55,6 +55,39 @@ public sealed class SnapshotCoordinatorTests
         }
     }
 
+    [Fact]
+    public async Task StartSnapshotAsync_RecordsSnapshotGateBusy_WhenAnotherSnapshotIsActive()
+    {
+        var backend = new TaggedScreenCaptureBackend();
+        var captureService = new ScreenCaptureService(backend);
+        var selectionRelease = new TaskCompletionSource<Rect?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var traces = new List<string>();
+
+        var coordinator = new SnapshotCoordinator(
+            captureService,
+            _ => { },
+            log: null,
+            monitorBoundsProvider: () => new[]
+            {
+                new System.Drawing.Rectangle(0, 0, 4, 3)
+            },
+            selectionProvider: (_, _, _) => selectionRelease.Task);
+
+        var activeTask = coordinator.StartSnapshotAsync(
+            "inv-1",
+            (id, phase, _, _) => traces.Add($"{id}:{phase}"));
+
+        await Task.Delay(50);
+        await coordinator.StartSnapshotAsync(
+            "inv-2",
+            (id, phase, _, _) => traces.Add($"{id}:{phase}"));
+
+        traces.Should().Contain("inv-2:snapshot_gate_busy");
+
+        selectionRelease.SetResult(null);
+        await activeTask;
+    }
+
     private static SKColor ReadPixel(CapturedImage image, int x, int y)
     {
         using var bitmap = SKBitmap.Decode(image.PngBytes);

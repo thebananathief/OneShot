@@ -16,14 +16,7 @@ public sealed class SelectionOverlayPoolTests
             new System.Drawing.Rectangle(0, 0, 10, 10),
             new System.Drawing.Rectangle(10, 0, 10, 10)
         };
-        using var pool = new SelectionOverlayPool(
-            () => bounds,
-            () =>
-            {
-                var surface = new FakePooledSurface();
-                createdSurfaces.Add(surface);
-                return surface;
-            });
+        using var pool = CreatePool(() => bounds, createdSurfaces);
 
         await pool.PrewarmAsync("prewarm-test");
 
@@ -32,18 +25,29 @@ public sealed class SelectionOverlayPoolTests
     }
 
     [Fact]
+    public async Task PrewarmAsync_DoesNotMutateInUseSurface()
+    {
+        var createdSurfaces = new List<FakePooledSurface>();
+        var bounds = new[] { new System.Drawing.Rectangle(0, 0, 10, 10) };
+        using var pool = CreatePool(() => bounds, createdSurfaces);
+        var snapshot = new MonitorSnapshot(bounds[0], CreateCapturedImage(10, 10));
+
+        using var lease = await pool.AcquireAsync(snapshot, "inv-1");
+        var leasedSurface = (FakePooledSurface)lease.Surface;
+        leasedSurface.PrepareForSnapshotCount.Should().Be(1);
+
+        await pool.PrewarmAsync("prewarm-test");
+
+        leasedSurface.PrepareForPrewarmCount.Should().Be(0);
+        leasedSurface.ShowCount.Should().Be(0);
+    }
+
+    [Fact]
     public async Task AcquireAsync_ReusesPrewarmedSurface_ForMatchingTopology()
     {
         var createdSurfaces = new List<FakePooledSurface>();
         var bounds = new[] { new System.Drawing.Rectangle(0, 0, 10, 10) };
-        using var pool = new SelectionOverlayPool(
-            () => bounds,
-            () =>
-            {
-                var surface = new FakePooledSurface();
-                createdSurfaces.Add(surface);
-                return surface;
-            });
+        using var pool = CreatePool(() => bounds, createdSurfaces);
 
         await pool.PrewarmAsync("prewarm-test");
         var snapshot = new MonitorSnapshot(bounds[0], CreateCapturedImage(10, 10));
@@ -60,31 +64,60 @@ public sealed class SelectionOverlayPoolTests
     }
 
     [Fact]
-    public async Task AcquireAsync_RebuildsPool_WhenTopologyChanges()
+    public async Task AcquireAsync_UsesTransientFallback_WhenTopologyChangesDuringActiveLease()
     {
         var createdSurfaces = new List<FakePooledSurface>();
         var monitorBounds = new[] { new System.Drawing.Rectangle(0, 0, 10, 10) };
-        using var pool = new SelectionOverlayPool(
-            () => monitorBounds,
+        using var pool = CreatePool(() => monitorBounds, createdSurfaces);
+        var firstSnapshot = new MonitorSnapshot(monitorBounds[0], CreateCapturedImage(10, 10));
+
+        using var activeLease = await pool.AcquireAsync(firstSnapshot, "inv-1");
+        var pooledSurface = activeLease.Surface;
+
+        monitorBounds = new[] { new System.Drawing.Rectangle(100, 0, 20, 20) };
+        var changedSnapshot = new MonitorSnapshot(monitorBounds[0], CreateCapturedImage(20, 20));
+
+        using var fallbackLease = await pool.AcquireAsync(changedSnapshot, "inv-2");
+
+        fallbackLease.Surface.Should().NotBeSameAs(pooledSurface);
+        createdSurfaces.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task ReleaseAfterPendingRebuild_RebuildsPoolForLaterAcquire()
+    {
+        var createdSurfaces = new List<FakePooledSurface>();
+        var monitorBounds = new[] { new System.Drawing.Rectangle(0, 0, 10, 10) };
+        using var pool = CreatePool(() => monitorBounds, createdSurfaces);
+        var firstSnapshot = new MonitorSnapshot(monitorBounds[0], CreateCapturedImage(10, 10));
+
+        var activeLease = await pool.AcquireAsync(firstSnapshot, "inv-1");
+        var originalSurface = activeLease.Surface;
+
+        monitorBounds = new[] { new System.Drawing.Rectangle(100, 0, 20, 20) };
+        var changedSnapshot = new MonitorSnapshot(monitorBounds[0], CreateCapturedImage(20, 20));
+        using (var fallbackLease = await pool.AcquireAsync(changedSnapshot, "inv-2"))
+        {
+            fallbackLease.Surface.Should().NotBeSameAs(originalSurface);
+        }
+
+        activeLease.Dispose();
+
+        using var rebuiltLease = await pool.AcquireAsync(changedSnapshot, "inv-3");
+        rebuiltLease.Surface.Should().NotBeSameAs(originalSurface);
+        createdSurfaces[0].CloseCount.Should().BeGreaterThan(0);
+    }
+
+    private static SelectionOverlayPool CreatePool(Func<IReadOnlyList<System.Drawing.Rectangle>> boundsProvider, ICollection<FakePooledSurface> createdSurfaces)
+    {
+        return new SelectionOverlayPool(
+            boundsProvider,
             () =>
             {
                 var surface = new FakePooledSurface();
                 createdSurfaces.Add(surface);
                 return surface;
             });
-
-        await pool.PrewarmAsync("prewarm-test");
-        createdSurfaces.Should().HaveCount(1);
-
-        var originalSurface = createdSurfaces[0];
-        monitorBounds = new[] { new System.Drawing.Rectangle(100, 0, 20, 20) };
-        var snapshot = new MonitorSnapshot(monitorBounds[0], CreateCapturedImage(20, 20));
-
-        using var lease = await pool.AcquireAsync(snapshot, "inv-2");
-
-        createdSurfaces.Should().HaveCount(2);
-        originalSurface.CloseCount.Should().BeGreaterThan(0);
-        lease.Surface.Should().NotBeSameAs(originalSurface);
     }
 
     private static CapturedImage CreateCapturedImage(int width, int height)
@@ -112,12 +145,18 @@ public sealed class SelectionOverlayPoolTests
 
         public int HideForPoolingCount { get; private set; }
 
+        public int PrepareForSnapshotCount { get; private set; }
+
+        public int PrepareForPrewarmCount { get; private set; }
+
         public void PrepareForSnapshot(CapturedImage monitorCapture, System.Drawing.Rectangle monitorBounds)
         {
+            PrepareForSnapshotCount++;
         }
 
         public void PrepareForPrewarm(System.Drawing.Rectangle monitorBounds)
         {
+            PrepareForPrewarmCount++;
         }
 
         public void ResetForPooling()

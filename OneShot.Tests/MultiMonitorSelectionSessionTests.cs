@@ -36,6 +36,35 @@ public sealed class MultiMonitorSelectionSessionTests
         selectionTask.IsCompleted.Should().BeFalse();
     }
 
+    [Fact]
+    public async Task GetSelectionAsync_ReleasesEachLeaseOnce_WhenSurfaceCloses()
+    {
+        var releaseCount = 0;
+        FakeSurface? leasedSurface = null;
+        var snapshots = new[]
+        {
+            new MonitorSnapshot(new System.Drawing.Rectangle(0, 0, 10, 10), CreateCapturedImage(10, 10))
+        };
+
+        var session = new MultiMonitorSelectionSession(
+            snapshots,
+            overlayLeaseFactory: _ =>
+            {
+                leasedSurface = new FakeSurface();
+                return ValueTask.FromResult(new PooledOverlayLease(leasedSurface, _ => releaseCount++));
+            },
+            installSystemHooks: false);
+
+        var selectionTask = session.GetSelectionAsync();
+        await Task.Delay(50);
+        leasedSurface.Should().NotBeNull();
+        leasedSurface!.Close();
+
+        var selection = await selectionTask;
+        selection.Should().BeNull();
+        releaseCount.Should().Be(1);
+    }
+
     private static CapturedImage CreateCapturedImage(int width, int height)
     {
         var bitmap = new SkiaSharp.SKBitmap(width, height, SkiaSharp.SKColorType.Bgra8888, SkiaSharp.SKAlphaType.Premul);

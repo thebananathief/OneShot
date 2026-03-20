@@ -188,10 +188,6 @@ internal sealed class MultiMonitorSelectionSession
             surface.CancelRequested -= OnCancelRequested;
             surface.SurfaceClosed -= OnSurfaceClosed;
             surface.SurfaceOpened -= OnSurfaceOpened;
-            if (surface.IsVisible)
-            {
-                surface.HideForPooling();
-            }
         }
 
         foreach (var lease in _leases.ToList())
@@ -199,6 +195,7 @@ internal sealed class MultiMonitorSelectionSession
             lease.Dispose();
         }
 
+        _surfaces.Clear();
         _leases.Clear();
         _selectionTcs.TrySetResult(selection);
     }

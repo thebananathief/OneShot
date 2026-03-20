@@ -12,6 +12,7 @@ public sealed class SnapshotCoordinator
     private readonly Func<IReadOnlyList<System.Drawing.Rectangle>> _monitorBoundsProvider;
     private readonly Func<string, IReadOnlyList<MonitorSnapshot>, Action<string, string, long, object?>?, Task<Rect?>> _selectionProvider;
     private readonly Action<string>? _log;
+    private int _activeSnapshotCount;
 
     public SnapshotCoordinator(ScreenCaptureService captureService, Action<CapturedImage> onCaptureReady, Action<string>? log = null)
         : this(captureService, onCaptureReady, log, MonitorTopologyService.GetMonitorBounds, CreateSelectionSessionAsync)
@@ -32,14 +33,18 @@ public sealed class SnapshotCoordinator
         _selectionProvider = selectionProvider;
     }
 
+    public bool IsSnapshotActive => Volatile.Read(ref _activeSnapshotCount) > 0;
+
     public async Task StartSnapshotAsync(string invocationId, Action<string, string, long, object?>? trace = null)
     {
         if (!await _snapshotGate.WaitAsync(0))
         {
+            trace?.Invoke(invocationId, "snapshot_gate_busy", 0, null);
             return;
         }
 
         var stopwatch = Stopwatch.StartNew();
+        Interlocked.Increment(ref _activeSnapshotCount);
         try
         {
             Log("StartSnapshotAsync entered.");
@@ -69,6 +74,7 @@ public sealed class SnapshotCoordinator
         }
         finally
         {
+            Interlocked.Decrement(ref _activeSnapshotCount);
             _snapshotGate.Release();
         }
     }

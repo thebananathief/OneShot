@@ -76,17 +76,30 @@ public partial class App : Application
 
         InitializeTrayIcon();
         Log($"Tray initialization completed at {_startupStopwatch.ElapsedMilliseconds}ms.");
-        _ = Dispatcher.UIThread.InvokeAsync(
-            async () =>
-            {
-                if (_overlayPool is null)
+        if (args.Length > 0 && args[0].Equals("snapshot", StringComparison.OrdinalIgnoreCase))
+        {
+            RecordSnapshotPhase(OverlayPoolTraceInvocationId, "overlay_pool_prewarm_skipped", 0, new { Reason = "startup_snapshot" });
+        }
+        else
+        {
+            _ = Dispatcher.UIThread.InvokeAsync(
+                async () =>
                 {
-                    return;
-                }
+                    if (_overlayPool is null)
+                    {
+                        return;
+                    }
 
-                await _overlayPool.PrewarmAsync(OverlayPoolTraceInvocationId, RecordSnapshotPhase);
-            },
-            DispatcherPriority.Background);
+                    if (_snapshotCoordinator?.IsSnapshotActive == true)
+                    {
+                        RecordSnapshotPhase(OverlayPoolTraceInvocationId, "overlay_pool_prewarm_deferred", 0, new { Reason = "snapshot_active" });
+                        return;
+                    }
+
+                    await _overlayPool.PrewarmAsync(OverlayPoolTraceInvocationId, RecordSnapshotPhase);
+                },
+                DispatcherPriority.Background);
+        }
 
         if (args.Length > 0 && args[0].Equals("snapshot", StringComparison.OrdinalIgnoreCase))
         {
