@@ -98,7 +98,7 @@ internal sealed class MultiMonitorSelectionSession
     private void OnSurfaceOpened(object? sender, EventArgs e)
     {
         _openedSurfaceCount++;
-        Trace("overlay_surface_opened", new { OpenedCount = _openedSurfaceCount, Total = _surfaces.Count });
+        Trace("overlay_surface_opened", new { OpenedCount = _openedSurfaceCount, Total = _surfaces.Count, RevealedAfterOpen = true });
         if (_openedSurfaceCount == _surfaces.Count)
         {
             Trace("all_overlays_opened", new { Total = _surfaces.Count });

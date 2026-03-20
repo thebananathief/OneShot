@@ -1,6 +1,7 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
+using Avalonia.Threading;
 using OneShot.Models;
 using OneShot.Services;
 using System.Runtime.InteropServices;
@@ -10,6 +11,8 @@ namespace OneShot.Windows;
 public partial class SelectionOverlayWindow : Window, ISelectionOverlaySurface
 {
     private System.Drawing.Rectangle _monitorBounds;
+    private bool _revealOnOpened;
+    private bool _isPrewarmOpen;
 
     public SelectionOverlayWindow()
     {
@@ -21,6 +24,33 @@ public partial class SelectionOverlayWindow : Window, ISelectionOverlaySurface
         Opened += (_, _) =>
         {
             ApplyMonitorBoundsAndAlignClientOrigin();
+
+            if (_isPrewarmOpen)
+            {
+                _isPrewarmOpen = false;
+                SurfaceOpened?.Invoke(this, EventArgs.Empty);
+                return;
+            }
+
+            if (_revealOnOpened)
+            {
+                Dispatcher.UIThread.Post(
+                    () =>
+                    {
+                        if (!_revealOnOpened || _isPrewarmOpen)
+                        {
+                            return;
+                        }
+
+                        ApplyMonitorBoundsAndAlignClientOrigin();
+                        Opacity = 1;
+                        _revealOnOpened = false;
+                        SurfaceOpened?.Invoke(this, EventArgs.Empty);
+                    },
+                    DispatcherPriority.Render);
+                return;
+            }
+
             SurfaceOpened?.Invoke(this, EventArgs.Empty);
         };
         ScalingChanged += (_, _) => ApplyMonitorBoundsAndAlignClientOrigin();
@@ -39,7 +69,9 @@ public partial class SelectionOverlayWindow : Window, ISelectionOverlaySurface
 
     public void PrepareForSnapshot(CapturedImage monitorCapture, System.Drawing.Rectangle monitorBounds)
     {
-        Opacity = 1;
+        Opacity = 0;
+        _revealOnOpened = true;
+        _isPrewarmOpen = false;
         _monitorBounds = monitorBounds;
         ClearSelectionVisual();
         BackgroundImage.Source = monitorCapture.Bitmap;
@@ -49,6 +81,8 @@ public partial class SelectionOverlayWindow : Window, ISelectionOverlaySurface
     public void PrepareForPrewarm(System.Drawing.Rectangle monitorBounds)
     {
         Opacity = 0;
+        _revealOnOpened = false;
+        _isPrewarmOpen = true;
         _monitorBounds = monitorBounds;
         ClearSelectionVisual();
         BackgroundImage.Source = null;
@@ -71,6 +105,9 @@ public partial class SelectionOverlayWindow : Window, ISelectionOverlaySurface
 
     public void HideForPooling()
     {
+        _revealOnOpened = false;
+        _isPrewarmOpen = false;
+        Opacity = 0;
         ResetForPooling();
         Hide();
     }
