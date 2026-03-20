@@ -83,7 +83,7 @@ internal sealed class SelectionOverlayPool : IDisposable
                 invocationId,
                 "overlay_surface_prepare_complete",
                 stopwatch.ElapsedMilliseconds,
-                new { snapshot.Bounds.Left, snapshot.Bounds.Top, snapshot.Bounds.Width, snapshot.Bounds.Height, FromPool = true });
+                new { snapshot.Bounds.Left, snapshot.Bounds.Top, snapshot.Bounds.Width, snapshot.Bounds.Height, FromPool = true, SelectionVisualCleared = true });
 
             return ValueTask.FromResult(new PooledOverlayLease(pooledEntry.Surface, _ => ReleasePooledEntry(pooledEntry)));
         }
@@ -110,7 +110,7 @@ internal sealed class SelectionOverlayPool : IDisposable
             invocationId,
             "overlay_surface_prepare_complete",
             stopwatch.ElapsedMilliseconds,
-            new { snapshot.Bounds.Left, snapshot.Bounds.Top, snapshot.Bounds.Width, snapshot.Bounds.Height, FromPool = false });
+            new { snapshot.Bounds.Left, snapshot.Bounds.Top, snapshot.Bounds.Width, snapshot.Bounds.Height, FromPool = false, SelectionVisualCleared = true });
 
         return ValueTask.FromResult(new PooledOverlayLease(fallbackSurface, surface => surface.Close()));
     }

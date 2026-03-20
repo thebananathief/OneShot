@@ -64,6 +64,26 @@ public sealed class SelectionOverlayPoolTests
     }
 
     [Fact]
+    public async Task ReleasingPooledSurface_ResetsBeforeHide()
+    {
+        var createdSurfaces = new List<FakePooledSurface>();
+        var bounds = new[] { new System.Drawing.Rectangle(0, 0, 10, 10) };
+        using var pool = CreatePool(() => bounds, createdSurfaces);
+        var snapshot = new MonitorSnapshot(bounds[0], CreateCapturedImage(10, 10));
+
+        var lease = await pool.AcquireAsync(snapshot, "inv-1");
+        var surface = createdSurfaces.Single();
+        surface.ResetForPoolingCount.Should().Be(0);
+        surface.HideForPoolingCount.Should().Be(0);
+
+        lease.Dispose();
+
+        surface.ResetForPoolingCount.Should().Be(1);
+        surface.HideForPoolingCount.Should().Be(1);
+        surface.OperationOrder.Should().ContainInOrder("reset", "hide");
+    }
+
+    [Fact]
     public async Task AcquireAsync_UsesTransientFallback_WhenTopologyChangesDuringActiveLease()
     {
         var createdSurfaces = new List<FakePooledSurface>();
@@ -149,6 +169,10 @@ public sealed class SelectionOverlayPoolTests
 
         public int PrepareForPrewarmCount { get; private set; }
 
+        public int ResetForPoolingCount { get; private set; }
+
+        public List<string> OperationOrder { get; } = new();
+
         public void PrepareForSnapshot(CapturedImage monitorCapture, System.Drawing.Rectangle monitorBounds)
         {
             PrepareForSnapshotCount++;
@@ -161,11 +185,14 @@ public sealed class SelectionOverlayPoolTests
 
         public void ResetForPooling()
         {
+            ResetForPoolingCount++;
+            OperationOrder.Add("reset");
         }
 
         public void HideForPooling()
         {
             HideForPoolingCount++;
+            OperationOrder.Add("hide");
             IsVisible = false;
         }
 

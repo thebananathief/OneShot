@@ -41,8 +41,8 @@ public partial class SelectionOverlayWindow : Window, ISelectionOverlaySurface
     {
         Opacity = 1;
         _monitorBounds = monitorBounds;
+        ClearSelectionVisual();
         BackgroundImage.Source = monitorCapture.Bitmap;
-        ResetForPooling();
         ApplyMonitorBoundsAndAlignClientOrigin();
     }
 
@@ -50,20 +50,29 @@ public partial class SelectionOverlayWindow : Window, ISelectionOverlaySurface
     {
         Opacity = 0;
         _monitorBounds = monitorBounds;
+        ClearSelectionVisual();
         BackgroundImage.Source = null;
-        ResetForPooling();
         ApplyMonitorBoundsAndAlignClientOrigin();
     }
 
     public void ResetForPooling()
     {
+        ClearSelectionVisual();
+    }
+
+    private void ClearSelectionVisual()
+    {
         SelectionRect.IsVisible = false;
+        Canvas.SetLeft(SelectionRect, 0);
+        Canvas.SetTop(SelectionRect, 0);
+        SelectionRect.Width = 0;
+        SelectionRect.Height = 0;
     }
 
     public void HideForPooling()
     {
-        Hide();
         ResetForPooling();
+        Hide();
     }
 
     private void OnPointerPressed(object? sender, PointerPressedEventArgs e)
@@ -93,14 +102,14 @@ public partial class SelectionOverlayWindow : Window, ISelectionOverlaySurface
     {
         if (!selectionInScreenPixels.HasValue)
         {
-            SelectionRect.IsVisible = false;
+            ClearSelectionVisual();
             return;
         }
 
         var intersected = SelectionGeometry.IntersectWithMonitor(selectionInScreenPixels.Value, _monitorBounds);
         if (!intersected.HasValue)
         {
-            SelectionRect.IsVisible = false;
+            ClearSelectionVisual();
             return;
         }
 
