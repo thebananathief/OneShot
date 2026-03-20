@@ -13,9 +13,10 @@ internal sealed class MultiMonitorSelectionSession
     private const int MinimumSelectionHeight = 3;
 
     private readonly IReadOnlyList<MonitorSnapshot> _monitorSnapshots;
-    private readonly Func<MonitorSnapshot, ISelectionOverlaySurface> _surfaceFactory;
+    private readonly Func<MonitorSnapshot, ValueTask<PooledOverlayLease>> _overlayLeaseFactory;
     private readonly TaskCompletionSource<Rect?> _selectionTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly List<ISelectionOverlaySurface> _surfaces = new();
+    private readonly List<PooledOverlayLease> _leases = new();
     private readonly NativeMethods.LowLevelKeyboardProc _keyboardProc;
     private readonly NativeMethods.LowLevelMouseProc _mouseProc;
     private readonly Action<string>? _log;
@@ -35,14 +36,14 @@ internal sealed class MultiMonitorSelectionSession
 
     public MultiMonitorSelectionSession(
         IReadOnlyList<MonitorSnapshot> monitorSnapshots,
-        Func<MonitorSnapshot, ISelectionOverlaySurface>? surfaceFactory = null,
+        Func<MonitorSnapshot, ValueTask<PooledOverlayLease>>? overlayLeaseFactory = null,
         Action<string>? log = null,
         string invocationId = "",
         Action<string, string, long, object?>? trace = null,
         bool installSystemHooks = true)
     {
         _monitorSnapshots = monitorSnapshots;
-        _surfaceFactory = surfaceFactory ?? (snapshot => new SelectionOverlayWindow(snapshot.Image, snapshot.Bounds));
+        _overlayLeaseFactory = overlayLeaseFactory ?? (snapshot => ValueTask.FromResult(CreateFreshLease(snapshot)));
         _keyboardProc = OnLowLevelKeyboard;
         _mouseProc = OnLowLevelMouse;
         _log = log;
@@ -51,7 +52,7 @@ internal sealed class MultiMonitorSelectionSession
         _installSystemHooks = installSystemHooks;
     }
 
-    public Task<Rect?> GetSelectionAsync()
+    public async Task<Rect?> GetSelectionAsync()
     {
         if (_started)
         {
@@ -62,17 +63,19 @@ internal sealed class MultiMonitorSelectionSession
         if (_monitorSnapshots.Count == 0)
         {
             _selectionTcs.TrySetResult(null);
-            return _selectionTcs.Task;
+            return await _selectionTcs.Task;
         }
 
         foreach (var snapshot in _monitorSnapshots)
         {
             Trace("overlay_surface_create_start", new { snapshot.Bounds.Left, snapshot.Bounds.Top, snapshot.Bounds.Width, snapshot.Bounds.Height });
-            var surface = _surfaceFactory(snapshot);
+            var lease = await _overlayLeaseFactory(snapshot);
+            var surface = lease.Surface;
             surface.DragStarted += OnDragStarted;
             surface.CancelRequested += OnCancelRequested;
             surface.SurfaceClosed += OnSurfaceClosed;
             surface.SurfaceOpened += OnSurfaceOpened;
+            _leases.Add(lease);
             _surfaces.Add(surface);
             Trace("overlay_surface_create_complete", new { snapshot.Bounds.Left, snapshot.Bounds.Top, snapshot.Bounds.Width, snapshot.Bounds.Height });
         }
@@ -89,7 +92,7 @@ internal sealed class MultiMonitorSelectionSession
             surface.Show();
         }
 
-        return _selectionTcs.Task;
+        return await _selectionTcs.Task;
     }
 
     private void OnSurfaceOpened(object? sender, EventArgs e)
@@ -187,10 +190,16 @@ internal sealed class MultiMonitorSelectionSession
             surface.SurfaceOpened -= OnSurfaceOpened;
             if (surface.IsVisible)
             {
-                surface.Close();
+                surface.HideForPooling();
             }
         }
 
+        foreach (var lease in _leases.ToList())
+        {
+            lease.Dispose();
+        }
+
+        _leases.Clear();
         _selectionTcs.TrySetResult(selection);
     }
 
@@ -319,6 +328,13 @@ internal sealed class MultiMonitorSelectionSession
         }
 
         _trace?.Invoke(_invocationId, phase, _stopwatch.ElapsedMilliseconds, details);
+    }
+
+    private static PooledOverlayLease CreateFreshLease(MonitorSnapshot snapshot)
+    {
+        var surface = new SelectionOverlayWindow();
+        surface.PrepareForSnapshot(snapshot.Image, snapshot.Bounds);
+        return new PooledOverlayLease(surface, releasedSurface => releasedSurface.Close());
     }
 
     private static class NativeMethods

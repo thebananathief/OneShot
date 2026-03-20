@@ -10,6 +10,7 @@ public sealed class MultiMonitorSelectionSessionTests
     public async Task GetSelectionAsync_RecordsOverlayOpenMilestones()
     {
         var traces = new List<string>();
+        var released = 0;
         var snapshots = new[]
         {
             new MonitorSnapshot(new System.Drawing.Rectangle(0, 0, 10, 10), CreateCapturedImage(10, 10)),
@@ -18,7 +19,7 @@ public sealed class MultiMonitorSelectionSessionTests
 
         var session = new MultiMonitorSelectionSession(
             snapshots,
-            surfaceFactory: _ => new FakeSurface(),
+            overlayLeaseFactory: _ => ValueTask.FromResult(new PooledOverlayLease(new FakeSurface(), _ => released++)),
             invocationId: "inv-1",
             trace: (id, phase, _, _) => traces.Add($"{id}:{phase}"),
             installSystemHooks: false);
@@ -29,6 +30,8 @@ public sealed class MultiMonitorSelectionSessionTests
         traces.Should().Contain("inv-1:overlay_show_start");
         traces.Count(t => t == "inv-1:overlay_surface_opened").Should().Be(2);
         traces.Should().Contain("inv-1:all_overlays_opened");
+        traces.Should().Contain("inv-1:overlay_surface_create_start");
+        released.Should().Be(0);
 
         selectionTask.IsCompleted.Should().BeFalse();
     }
@@ -49,6 +52,25 @@ public sealed class MultiMonitorSelectionSessionTests
         public event EventHandler? SurfaceOpened;
 
         public bool IsVisible { get; private set; }
+
+        public bool IsPooledReusable => true;
+
+        public void PrepareForSnapshot(CapturedImage monitorCapture, System.Drawing.Rectangle monitorBounds)
+        {
+        }
+
+        public void PrepareForPrewarm(System.Drawing.Rectangle monitorBounds)
+        {
+        }
+
+        public void ResetForPooling()
+        {
+        }
+
+        public void HideForPooling()
+        {
+            IsVisible = false;
+        }
 
         public void Show()
         {

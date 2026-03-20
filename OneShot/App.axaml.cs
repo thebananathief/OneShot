@@ -21,8 +21,10 @@ public partial class App : Application
     private OutputService? _outputService;
     private SnapshotCoordinator? _snapshotCoordinator;
     private NotificationCoordinator? _notificationCoordinator;
+    private SelectionOverlayPool? _overlayPool;
     private IClassicDesktopStyleApplicationLifetime? _desktop;
     private AppCommandEnvelope? _initialEnvelope;
+    private const string OverlayPoolTraceInvocationId = "overlay-pool-startup";
 
     public override void Initialize()
     {
@@ -53,6 +55,7 @@ public partial class App : Application
         _outputService = new OutputService();
         var captureService = new ScreenCaptureService();
         _notificationCoordinator = new NotificationCoordinator(_outputService);
+        _overlayPool = new SelectionOverlayPool(MonitorTopologyService.GetMonitorBounds);
         _snapshotCoordinator = new SnapshotCoordinator(captureService, image =>
         {
             _notificationCoordinator.ShowNotification(image);
@@ -61,7 +64,7 @@ public partial class App : Application
             {
                 RecordDaemonTrace(invocationId, "capture_ready_callback_complete");
             }
-        }, Log);
+        }, Log, MonitorTopologyService.GetMonitorBounds, CreateSelectionSessionAsync);
 
         _commandServer = new NamedPipeCommandServer(log: Log);
         _commandServer.CommandReceived += async (_, command) => await OnCommandAsync(command);
@@ -73,6 +76,17 @@ public partial class App : Application
 
         InitializeTrayIcon();
         Log($"Tray initialization completed at {_startupStopwatch.ElapsedMilliseconds}ms.");
+        _ = Dispatcher.UIThread.InvokeAsync(
+            async () =>
+            {
+                if (_overlayPool is null)
+                {
+                    return;
+                }
+
+                await _overlayPool.PrewarmAsync(OverlayPoolTraceInvocationId, RecordSnapshotPhase);
+            },
+            DispatcherPriority.Background);
 
         if (args.Length > 0 && args[0].Equals("snapshot", StringComparison.OrdinalIgnoreCase))
         {
@@ -88,6 +102,7 @@ public partial class App : Application
     private void OnExit()
     {
         _commandServer?.Dispose();
+        _overlayPool?.Dispose();
 
         _notificationCoordinator?.CloseAll();
 
@@ -185,6 +200,31 @@ public partial class App : Application
         {
             _traceRecorder.Record(invocationId, phase, stopwatch.ElapsedMilliseconds, details);
         }
+    }
+
+    private Task<Rect?> CreateSelectionSessionAsync(string invocationId, IReadOnlyList<MonitorSnapshot> monitorSnapshots, Action<string, string, long, object?>? trace)
+    {
+        Func<MonitorSnapshot, ValueTask<PooledOverlayLease>> overlayLeaseFactory;
+        if (_overlayPool is null)
+        {
+            overlayLeaseFactory = snapshot =>
+            {
+                var surface = new Windows.SelectionOverlayWindow();
+                surface.PrepareForSnapshot(snapshot.Image, snapshot.Bounds);
+                return ValueTask.FromResult(new PooledOverlayLease(surface, releasedSurface => releasedSurface.Close()));
+            };
+        }
+        else
+        {
+            overlayLeaseFactory = snapshot => _overlayPool.AcquireAsync(snapshot, invocationId, trace);
+        }
+
+        var overlaySession = new MultiMonitorSelectionSession(
+            monitorSnapshots,
+            overlayLeaseFactory: overlayLeaseFactory,
+            invocationId: invocationId,
+            trace: trace);
+        return overlaySession.GetSelectionAsync();
     }
 
     private static void Log(string message)

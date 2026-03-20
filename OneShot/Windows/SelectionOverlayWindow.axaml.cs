@@ -9,14 +9,13 @@ namespace OneShot.Windows;
 
 public partial class SelectionOverlayWindow : Window, ISelectionOverlaySurface
 {
-    private readonly System.Drawing.Rectangle _monitorBounds;
+    private System.Drawing.Rectangle _monitorBounds;
 
-    public SelectionOverlayWindow(CapturedImage monitorCapture, System.Drawing.Rectangle monitorBounds)
+    public SelectionOverlayWindow()
     {
         InitializeComponent();
-        _monitorBounds = monitorBounds;
-        BackgroundImage.Source = monitorCapture.Bitmap;
-        ApplyMonitorBoundsAndAlignClientOrigin();
+        _monitorBounds = new System.Drawing.Rectangle(0, 0, 1, 1);
+        Opacity = 1;
 
         PointerPressed += OnPointerPressed;
         Opened += (_, _) =>
@@ -35,6 +34,37 @@ public partial class SelectionOverlayWindow : Window, ISelectionOverlaySurface
     public event EventHandler? SurfaceClosed;
 
     public event EventHandler? SurfaceOpened;
+
+    public bool IsPooledReusable => true;
+
+    public void PrepareForSnapshot(CapturedImage monitorCapture, System.Drawing.Rectangle monitorBounds)
+    {
+        Opacity = 1;
+        _monitorBounds = monitorBounds;
+        BackgroundImage.Source = monitorCapture.Bitmap;
+        ResetForPooling();
+        ApplyMonitorBoundsAndAlignClientOrigin();
+    }
+
+    public void PrepareForPrewarm(System.Drawing.Rectangle monitorBounds)
+    {
+        Opacity = 0;
+        _monitorBounds = monitorBounds;
+        BackgroundImage.Source = null;
+        ResetForPooling();
+        ApplyMonitorBoundsAndAlignClientOrigin();
+    }
+
+    public void ResetForPooling()
+    {
+        SelectionRect.IsVisible = false;
+    }
+
+    public void HideForPooling()
+    {
+        Hide();
+        ResetForPooling();
+    }
 
     private void OnPointerPressed(object? sender, PointerPressedEventArgs e)
     {
