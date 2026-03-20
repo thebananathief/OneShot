@@ -390,3 +390,5 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+.tools/
+erl_crash.dump
