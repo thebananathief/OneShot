@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Avalonia.Threading;
 using OneShot.Models;
 
 namespace OneShot.Services;
@@ -8,7 +9,7 @@ internal sealed class SelectionOverlayPool : IDisposable
     private readonly object _sync = new();
     private readonly Func<IReadOnlyList<System.Drawing.Rectangle>> _monitorBoundsProvider;
     private readonly Func<ISelectionOverlaySurface> _surfaceFactory;
-    private readonly List<PooledSurfaceEntry> _entries = new();
+    private readonly List<StandbyEntry> _entries = new();
     private MonitorTopologyFingerprint? _fingerprint;
     private bool _pendingRebuild;
     private int _rebuildCount;
@@ -28,8 +29,8 @@ internal sealed class SelectionOverlayPool : IDisposable
 
         while (true)
         {
-            var preparation = PrepareNextPrewarmEntry(invocationId, trace, stopwatch);
-            if (preparation is null)
+            var entry = GetNextStandbyEntryToPrepare(invocationId, trace, stopwatch.ElapsedMilliseconds);
+            if (entry is null)
             {
                 trace?.Invoke(
                     invocationId,
@@ -39,20 +40,7 @@ internal sealed class SelectionOverlayPool : IDisposable
                 return;
             }
 
-            var (entry, warmed) = preparation.Value;
-            var opened = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-
-            void OnOpened(object? _, EventArgs __)
-            {
-                entry.Surface.SurfaceOpened -= OnOpened;
-                opened.TrySetResult();
-            }
-
-            entry.Surface.SurfaceOpened += OnOpened;
-            entry.Surface.PrepareForPrewarm(entry.Bounds);
-            entry.Surface.Show();
-            await opened.Task;
-            warmed.Dispose();
+            await PrepareStandbyEntryAsync(entry, invocationId, trace);
         }
     }
 
@@ -65,27 +53,36 @@ internal sealed class SelectionOverlayPool : IDisposable
             stopwatch.ElapsedMilliseconds,
             new { snapshot.Bounds.Left, snapshot.Bounds.Top, snapshot.Bounds.Width, snapshot.Bounds.Height });
 
-        if (TryAcquirePooledEntry(snapshot.Bounds, invocationId, trace, out var pooledEntry))
+        if (TryAcquireStandby(snapshot.Bounds, invocationId, trace, out var entry, out var standbySurface))
         {
             trace?.Invoke(
                 invocationId,
                 "overlay_surface_acquire_complete",
                 stopwatch.ElapsedMilliseconds,
-                new { FromPool = true, PoolSize = GetPoolSize() });
+                new { FromPool = true, PoolSize = GetPoolSize(), StandbyConsumed = true });
 
             trace?.Invoke(
                 invocationId,
                 "overlay_surface_prepare_start",
                 stopwatch.ElapsedMilliseconds,
-                new { snapshot.Bounds.Left, snapshot.Bounds.Top, snapshot.Bounds.Width, snapshot.Bounds.Height, FromPool = true });
-            pooledEntry.Surface.PrepareForSnapshot(snapshot.Image, snapshot.Bounds);
+                new { snapshot.Bounds.Left, snapshot.Bounds.Top, snapshot.Bounds.Width, snapshot.Bounds.Height, FromPool = true, StandbyConsumed = true });
+            standbySurface.PrepareForSnapshot(snapshot.Image, snapshot.Bounds);
             trace?.Invoke(
                 invocationId,
                 "overlay_surface_prepare_complete",
                 stopwatch.ElapsedMilliseconds,
-                new { snapshot.Bounds.Left, snapshot.Bounds.Top, snapshot.Bounds.Width, snapshot.Bounds.Height, FromPool = true, SelectionVisualCleared = true });
+                new
+                {
+                    snapshot.Bounds.Left,
+                    snapshot.Bounds.Top,
+                    snapshot.Bounds.Width,
+                    snapshot.Bounds.Height,
+                    FromPool = true,
+                    StandbyConsumed = true,
+                    SelectionVisualCleared = true
+                });
 
-            return ValueTask.FromResult(new PooledOverlayLease(pooledEntry.Surface, _ => ReleasePooledEntry(pooledEntry)));
+            return ValueTask.FromResult(new PooledOverlayLease(standbySurface, surface => ReleaseLeasedStandby(entry, surface, invocationId, trace)));
         }
 
         trace?.Invoke(
@@ -99,18 +96,27 @@ internal sealed class SelectionOverlayPool : IDisposable
             invocationId,
             "overlay_surface_acquire_complete",
             stopwatch.ElapsedMilliseconds,
-            new { FromPool = false, PoolSize = GetPoolSize() });
+            new { FromPool = false, PoolSize = GetPoolSize(), StandbyConsumed = false });
         trace?.Invoke(
             invocationId,
             "overlay_surface_prepare_start",
             stopwatch.ElapsedMilliseconds,
-            new { snapshot.Bounds.Left, snapshot.Bounds.Top, snapshot.Bounds.Width, snapshot.Bounds.Height, FromPool = false });
+            new { snapshot.Bounds.Left, snapshot.Bounds.Top, snapshot.Bounds.Width, snapshot.Bounds.Height, FromPool = false, StandbyConsumed = false });
         fallbackSurface.PrepareForSnapshot(snapshot.Image, snapshot.Bounds);
         trace?.Invoke(
             invocationId,
             "overlay_surface_prepare_complete",
             stopwatch.ElapsedMilliseconds,
-            new { snapshot.Bounds.Left, snapshot.Bounds.Top, snapshot.Bounds.Width, snapshot.Bounds.Height, FromPool = false, SelectionVisualCleared = true });
+            new
+            {
+                snapshot.Bounds.Left,
+                snapshot.Bounds.Top,
+                snapshot.Bounds.Width,
+                snapshot.Bounds.Height,
+                FromPool = false,
+                StandbyConsumed = false,
+                SelectionVisualCleared = true
+            });
 
         return ValueTask.FromResult(new PooledOverlayLease(fallbackSurface, surface => surface.Close()));
     }
@@ -123,121 +129,206 @@ internal sealed class SelectionOverlayPool : IDisposable
         }
     }
 
-    private (PooledSurfaceEntry Entry, PooledOverlayLease Lease)? PrepareNextPrewarmEntry(
-        string invocationId,
-        Action<string, string, long, object?>? trace,
-        Stopwatch stopwatch)
+    private StandbyEntry? GetNextStandbyEntryToPrepare(string invocationId, Action<string, string, long, object?>? trace, long elapsedMs)
     {
         List<ISelectionOverlaySurface>? surfacesToClose = null;
-        PooledSurfaceEntry? entry = null;
+        StandbyEntry? entry = null;
+
         lock (_sync)
         {
-            surfacesToClose = EnsureTopologyLocked(invocationId, trace, stopwatch);
+            surfacesToClose = EnsureTopologyLocked(invocationId, trace, elapsedMs);
             if (_pendingRebuild)
             {
                 goto Done;
             }
 
-            entry = _entries.FirstOrDefault(candidate => candidate.State == PooledEntryState.Idle && !candidate.IsPrewarmed);
+            entry = _entries.FirstOrDefault(candidate => candidate.State == StandbyEntryState.Empty);
             if (entry is null)
             {
                 goto Done;
             }
 
-            entry.State = PooledEntryState.Prewarming;
+            entry.State = StandbyEntryState.PreparingStandby;
+            entry.Surface = _surfaceFactory();
         }
 
 Done:
         CloseSurfaces(surfacesToClose);
-        return entry is null
-            ? null
-            : (entry, new PooledOverlayLease(entry.Surface, _ => ReleasePrewarmedEntry(entry)));
+        return entry;
     }
 
-    private bool TryAcquirePooledEntry(
+    private bool TryAcquireStandby(
         System.Drawing.Rectangle bounds,
         string invocationId,
         Action<string, string, long, object?>? trace,
-        out PooledSurfaceEntry entry)
+        out StandbyEntry entry,
+        out ISelectionOverlaySurface surface)
     {
         List<ISelectionOverlaySurface>? surfacesToClose = null;
-        PooledSurfaceEntry? candidate = null;
+        StandbyEntry? candidate = null;
+        ISelectionOverlaySurface? candidateSurface = null;
+
         lock (_sync)
         {
-            surfacesToClose = EnsureTopologyLocked(invocationId, trace, null);
+            surfacesToClose = EnsureTopologyLocked(invocationId, trace, 0);
             if (_pendingRebuild)
             {
                 goto Done;
             }
 
-            candidate = _entries.FirstOrDefault(candidateEntry => candidateEntry.Bounds == bounds && candidateEntry.State == PooledEntryState.Idle);
+            candidate = _entries.FirstOrDefault(
+                candidateEntry => candidateEntry.Bounds == bounds && candidateEntry.State == StandbyEntryState.ReadyStandby && candidateEntry.Surface is not null);
+
             if (candidate is not null)
             {
-                candidate.State = PooledEntryState.InUse;
-                candidate.IsPrewarmed = true;
+                candidate.State = StandbyEntryState.Leased;
+                candidateSurface = candidate.Surface;
+                candidate.Surface = null;
             }
         }
 
 Done:
         CloseSurfaces(surfacesToClose);
         entry = candidate!;
-        return candidate is not null;
+        surface = candidateSurface!;
+        return candidate is not null && candidateSurface is not null;
     }
 
-    private void ReleasePrewarmedEntry(PooledSurfaceEntry entry)
+    private async Task PrepareStandbyEntryAsync(StandbyEntry entry, string invocationId, Action<string, string, long, object?>? trace)
     {
-        if (!entry.Surface.IsPooledReusable)
+        var surface = entry.Surface;
+        if (surface is null)
         {
-            entry.Surface.Close();
+            lock (_sync)
+            {
+                if (_entries.Contains(entry) && entry.State == StandbyEntryState.PreparingStandby)
+                {
+                    entry.State = StandbyEntryState.Empty;
+                }
+            }
+
             return;
         }
 
-        entry.Surface.HideForPooling();
+        var opened = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        List<ISelectionOverlaySurface>? surfacesToClose = null;
+        void OnOpened(object? _, EventArgs __)
+        {
+            surface.SurfaceOpened -= OnOpened;
+            opened.TrySetResult();
+        }
+
+        surface.SurfaceOpened += OnOpened;
+        surface.PrepareForPrewarm(entry.Bounds);
+        surface.Show();
+        await opened.Task;
+        surface.HideForPooling();
+
         lock (_sync)
         {
             if (!_entries.Contains(entry))
             {
+                surface.Close();
                 return;
             }
 
-            entry.State = PooledEntryState.Idle;
-            entry.IsPrewarmed = true;
+            if (entry.State == StandbyEntryState.PreparingStandby && entry.Surface == surface)
+            {
+                entry.State = StandbyEntryState.ReadyStandby;
+            }
+        }
+    }
+
+    private void ReleaseLeasedStandby(StandbyEntry entry, ISelectionOverlaySurface surface, string invocationId, Action<string, string, long, object?>? trace)
+    {
+        List<ISelectionOverlaySurface>? surfacesToClose;
+        bool queueReplacement;
+        StandbyEntry? preparedEntry;
+
+        lock (_sync)
+        {
+            queueReplacement = _entries.Contains(entry) && entry.State == StandbyEntryState.Leased;
+            entry.State = StandbyEntryState.Empty;
+            entry.Surface = null;
             surfacesToClose = TryConsumePendingRebuildLocked();
         }
 
-        CloseSurfaces(surfacesToClose);
-    }
+        surface.Close();
 
-    private void ReleasePooledEntry(PooledSurfaceEntry entry)
-    {
-        if (!entry.Surface.IsPooledReusable)
+        trace?.Invoke(
+            invocationId,
+            "overlay_standby_replacement_start",
+            0,
+            new { ReplacementQueued = queueReplacement, Bounds = entry.Bounds });
+
+        CloseSurfaces(surfacesToClose);
+
+        if (!queueReplacement)
         {
-            entry.Surface.Close();
             return;
         }
 
-        entry.Surface.ResetForPooling();
-        entry.Surface.HideForPooling();
-
-        List<ISelectionOverlaySurface>? surfacesToClose = null;
-        lock (_sync)
+        preparedEntry = GetNextEntryForReplacement(entry.Bounds);
+        if (preparedEntry is null)
         {
-            if (!_entries.Contains(entry))
-            {
-                return;
-            }
-
-            entry.State = PooledEntryState.Idle;
-            entry.IsPrewarmed = true;
-            surfacesToClose = TryConsumePendingRebuildLocked();
+            trace?.Invoke(
+                invocationId,
+                "overlay_standby_replacement_complete",
+                0,
+                new { ReplacementReady = false, Bounds = entry.Bounds });
+            return;
         }
 
-        CloseSurfaces(surfacesToClose);
+        if (Dispatcher.UIThread.CheckAccess())
+        {
+            _ = CompleteReplacementAsync(preparedEntry, invocationId, trace);
+            return;
+        }
+
+        _ = Dispatcher.UIThread.InvokeAsync(
+            () => CompleteReplacementAsync(preparedEntry, invocationId, trace),
+            DispatcherPriority.Background);
     }
 
-    private List<ISelectionOverlaySurface>? EnsureTopologyLocked(string invocationId, Action<string, string, long, object?>? trace, Stopwatch? stopwatch)
+    private StandbyEntry? GetNextEntryForReplacement(System.Drawing.Rectangle bounds)
+    {
+        lock (_sync)
+        {
+            if (_pendingRebuild)
+            {
+                return null;
+            }
+
+            var entry = _entries.FirstOrDefault(candidate => candidate.Bounds == bounds && candidate.State == StandbyEntryState.Empty && candidate.Surface is null);
+            if (entry is null)
+            {
+                return null;
+            }
+
+            entry.State = StandbyEntryState.PreparingStandby;
+            entry.Surface = _surfaceFactory();
+            return entry;
+        }
+    }
+
+    private async Task CompleteReplacementAsync(StandbyEntry preparedEntry, string invocationId, Action<string, string, long, object?>? trace)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        await PrepareStandbyEntryAsync(preparedEntry, invocationId, trace);
+        bool replacementReady;
+        lock (_sync)
+        {
+            replacementReady = _entries.Contains(preparedEntry) && preparedEntry.State == StandbyEntryState.ReadyStandby;
+        }
+
+        trace?.Invoke(
+            invocationId,
+            "overlay_standby_replacement_complete",
+            stopwatch.ElapsedMilliseconds,
+            new { ReplacementReady = replacementReady, Bounds = preparedEntry.Bounds });
+    }
+
+    private List<ISelectionOverlaySurface>? EnsureTopologyLocked(string invocationId, Action<string, string, long, object?>? trace, long elapsedMs)
     {
         var currentBounds = _monitorBoundsProvider();
         var currentFingerprint = MonitorTopologyFingerprint.Create(currentBounds);
@@ -246,13 +337,13 @@ Done:
             return null;
         }
 
-        if (_entries.Any(entry => entry.State == PooledEntryState.InUse || entry.State == PooledEntryState.Prewarming))
+        if (_entries.Any(entry => entry.State == StandbyEntryState.Leased || entry.State == StandbyEntryState.PreparingStandby))
         {
             _pendingRebuild = true;
             trace?.Invoke(
                 invocationId,
                 "overlay_pool_pending_rebuild",
-                stopwatch?.ElapsedMilliseconds ?? 0,
+                elapsedMs,
                 new { PoolSize = _entries.Count, currentBounds.Count });
             return null;
         }
@@ -260,14 +351,18 @@ Done:
         trace?.Invoke(
             invocationId,
             "overlay_pool_rebuild_start",
-            stopwatch?.ElapsedMilliseconds ?? 0,
+            elapsedMs,
             new { PoolSize = _entries.Count, currentBounds.Count });
 
-        var oldSurfaces = _entries.Select(entry => entry.Surface).ToList();
+        var oldSurfaces = _entries
+            .Select(entry => entry.Surface)
+            .Where(surface => surface is not null)
+            .Cast<ISelectionOverlaySurface>()
+            .ToList();
         _entries.Clear();
         foreach (var bounds in currentBounds)
         {
-            _entries.Add(new PooledSurfaceEntry(bounds, _surfaceFactory()));
+            _entries.Add(new StandbyEntry(bounds));
         }
 
         _fingerprint = currentFingerprint;
@@ -277,19 +372,23 @@ Done:
         trace?.Invoke(
             invocationId,
             "overlay_pool_rebuild_complete",
-            stopwatch?.ElapsedMilliseconds ?? 0,
+            elapsedMs,
             new { PoolSize = _entries.Count, RebuildCount = _rebuildCount });
         return oldSurfaces;
     }
 
     private List<ISelectionOverlaySurface>? TryConsumePendingRebuildLocked()
     {
-        if (!_pendingRebuild || _entries.Any(entry => entry.State == PooledEntryState.InUse || entry.State == PooledEntryState.Prewarming))
+        if (!_pendingRebuild || _entries.Any(entry => entry.State == StandbyEntryState.Leased || entry.State == StandbyEntryState.PreparingStandby))
         {
             return null;
         }
 
-        var oldSurfaces = _entries.Select(entry => entry.Surface).ToList();
+        var oldSurfaces = _entries
+            .Select(entry => entry.Surface)
+            .Where(surface => surface is not null)
+            .Cast<ISelectionOverlaySurface>()
+            .ToList();
         _entries.Clear();
         _fingerprint = null;
         _pendingRebuild = false;
@@ -300,7 +399,11 @@ Done:
     {
         lock (_sync)
         {
-            var surfaces = _entries.Select(entry => entry.Surface).ToList();
+            var surfaces = _entries
+                .Select(entry => entry.Surface)
+                .Where(surface => surface is not null)
+                .Cast<ISelectionOverlaySurface>()
+                .ToList();
             _entries.Clear();
             _fingerprint = null;
             _pendingRebuild = false;
@@ -337,27 +440,25 @@ Done:
         }
     }
 
-    private sealed class PooledSurfaceEntry
+    private sealed class StandbyEntry
     {
-        public PooledSurfaceEntry(System.Drawing.Rectangle bounds, ISelectionOverlaySurface surface)
+        public StandbyEntry(System.Drawing.Rectangle bounds)
         {
             Bounds = bounds;
-            Surface = surface;
         }
 
         public System.Drawing.Rectangle Bounds { get; }
 
-        public ISelectionOverlaySurface Surface { get; }
+        public ISelectionOverlaySurface? Surface { get; set; }
 
-        public PooledEntryState State { get; set; }
-
-        public bool IsPrewarmed { get; set; }
+        public StandbyEntryState State { get; set; }
     }
 
-    private enum PooledEntryState
+    private enum StandbyEntryState
     {
-        Idle,
-        InUse,
-        Prewarming
+        Empty,
+        PreparingStandby,
+        ReadyStandby,
+        Leased
     }
 }
