@@ -4,8 +4,8 @@ namespace OneShot.Services;
 
 internal static class NotificationPlacement
 {
-    internal const double DefaultWidthDip = 220;
-    internal const double DefaultHeightDip = 88;
+    internal const double DefaultWidthDip = 258;
+    internal const double DefaultHeightDip = 119;
 
     public static NotificationPlacementResult Arrange(
         PixelRect workingArea,

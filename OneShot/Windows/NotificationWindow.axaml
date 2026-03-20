@@ -14,22 +14,22 @@
   </Window.Resources>
   <Window.Styles>
     <Style Selector="Button.icon-button">
-      <Setter Property="Width" Value="32" />
-      <Setter Property="Height" Value="32" />
+      <Setter Property="Width" Value="48" />
+      <Setter Property="Height" Value="48" />
       <Setter Property="Padding" Value="0" />
       <Setter Property="HorizontalContentAlignment" Value="Center" />
       <Setter Property="VerticalContentAlignment" Value="Center" />
     </Style>
   </Window.Styles>
   <Border x:Name="CardBorder"
-          Padding="8"
+          Padding="4"
           BorderBrush="#808080"
           BorderThickness="1"
           CornerRadius="8"
           Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}">
-    <Grid RowDefinitions="*,6,*" ColumnDefinitions="Auto,6,Auto">
+    <Grid RowDefinitions="*,4,*" ColumnDefinitions="Auto,4,Auto">
       <Border x:Name="ThumbBorder" Grid.RowSpan="3" Grid.Column="0" BorderBrush="#A0A0A0" BorderThickness="1">
-        <Image x:Name="Thumbnail" Width="132" Height="74" Stretch="Uniform" />
+        <Image x:Name="Thumbnail" Width="198" Height="111" Stretch="Uniform" />
       </Border>
 
       <Button x:Name="DismissButton"
@@ -37,7 +37,7 @@
               Classes="icon-button"
               ToolTip.Tip="Dismiss"
               automation:AutomationProperties.Name="Dismiss">
-        <PathIcon Width="16" Height="16" Data="{StaticResource dismiss_regular}" />
+        <PathIcon Width="24" Height="24" Data="{StaticResource dismiss_regular}" />
       </Button>
       <Button x:Name="MarkupButton"
               Grid.Row="2"
@@ -45,7 +45,7 @@
               Classes="icon-button"
               ToolTip.Tip="Open markup"
               automation:AutomationProperties.Name="Open markup">
-        <PathIcon Width="16" Height="16" Data="{StaticResource edit_settings_regular}" />
+        <PathIcon Width="24" Height="24" Data="{StaticResource edit_settings_regular}" />
       </Button>
     </Grid>
   </Border>
