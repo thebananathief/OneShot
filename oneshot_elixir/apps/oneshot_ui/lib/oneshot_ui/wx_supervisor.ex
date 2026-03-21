@@ -11,6 +11,13 @@ defmodule OneshotUi.WxSupervisor do
   def init(_args) do
     children = [
       %{
+        id: OneshotUi.NotificationManager,
+        start: {OneshotUi.NotificationManager, :start_link, [[]]},
+        type: :worker,
+        restart: :permanent,
+        shutdown: 5_000
+      },
+      %{
         id: OneshotUi.TrayHost,
         start: {OneshotUi.TrayHost, :start_link, [[]]},
         type: :worker,

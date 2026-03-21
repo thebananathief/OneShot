@@ -3,6 +3,8 @@ defmodule OneshotUi.TrayHost do
 
   @behaviour :wx_object
 
+  import OneshotUi.WxSupport
+
   require Logger
 
   @take_snapshot_id 10_001
@@ -37,6 +39,7 @@ defmodule OneshotUi.TrayHost do
     :wxNotificationMessage.show(notification)
 
     :ok = OneshotCore.Events.subscribe(:snapshot)
+    :ok = OneshotCore.Events.subscribe(:command)
 
     state = %__MODULE__{
       wx: wx,
@@ -55,7 +58,7 @@ defmodule OneshotUi.TrayHost do
   end
 
   @impl true
-  def handle_event({:wx, _, _, _, {:wxCommand, :command_menu_selected, _, _, id, _, _}}, state) do
+  def handle_event(wx(id: id, event: wxCommand(type: :command_menu_selected)), state) do
     case Map.get(state.menu_ids, id) do
       :snapshot ->
         :ok = OneshotCore.CaptureCoordinator.request_snapshot(:tray)
@@ -93,6 +96,19 @@ defmodule OneshotUi.TrayHost do
     {:noreply, replace_notification(state, message)}
   end
 
+  def handle_info({:oneshot_event, :command, %{command: "snapshot"}}, state) do
+    case OneshotUi.SnapshotFlow.run() do
+      {:ok, path} ->
+        {:noreply, replace_notification(state, "Saved screenshot to #{path}")}
+
+      :cancel ->
+        {:noreply, replace_notification(state, "Snapshot cancelled")}
+
+      {:error, reason} ->
+        {:noreply, replace_notification(state, "Snapshot failed: #{inspect(reason)}")}
+    end
+  end
+
   def handle_info(_message, state) do
     {:noreply, state}
   end
@@ -110,6 +126,7 @@ defmodule OneshotUi.TrayHost do
   @impl true
   def terminate(_reason, state) do
     OneshotCore.Events.unsubscribe(:snapshot)
+    OneshotCore.Events.unsubscribe(:command)
     close_notification(state.notification)
     safe_invoke(fn -> :wxTaskBarIcon.removeIcon(state.icon) end)
     safe_invoke(fn -> :wxMenu.destroy(state.menu) end)

@@ -4,7 +4,12 @@ defmodule OneshotCore.StartupRegistration do
   alias OneshotCore.Config
 
   def install(config \\ Config.fetch()) do
-    exe_path = System.find_executable("oneshot") || System.find_executable("oneshot.bat") || ""
+    exe_path =
+      System.get_env("ONESHOT_STARTUP_COMMAND") ||
+        System.find_executable("oneshot") ||
+        System.find_executable("oneshot.cmd") ||
+        System.find_executable("oneshot.bat") ||
+        ""
 
     if exe_path == "" do
       {:error, :executable_not_found}
