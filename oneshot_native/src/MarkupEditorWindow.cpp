@@ -2,6 +2,7 @@
 
 #include <windowsx.h>
 #include <cmath>
+#include <commdlg.h>
 
 namespace
 {
@@ -20,6 +21,13 @@ namespace
     constexpr int kDoneId = 2013;
     constexpr int kCancelId = 2014;
     constexpr int kTextInputId = 2015;
+    constexpr int kStrokeColorId = 2016;
+    constexpr int kThicknessDownId = 2017;
+    constexpr int kThicknessUpId = 2018;
+    constexpr int kFillToggleId = 2019;
+    constexpr int kFontDownId = 2020;
+    constexpr int kFontUpId = 2021;
+    constexpr int kAngleSnapIncrementDegrees = 15;
 
     RECT MakeRect(int left, int top, int right, int bottom)
     {
@@ -50,9 +58,13 @@ namespace oneshot
         POINT dragStart{};
         POINT dragCurrent{};
         COLORREF color{RGB(255, 0, 0)};
+        COLORREF fillColor{RGB(255, 224, 224)};
         int thickness{3};
+        int fontSize{22};
+        bool fillShapes{true};
         bool finished{false};
         OutputService* outputService{nullptr};
+        COLORREF customColors[16]{};
     };
 
     MarkupEditorWindow::MarkupEditorWindow(OutputService& outputService)
@@ -61,6 +73,62 @@ namespace oneshot
     }
 
     MarkupEditorWindow::~MarkupEditorWindow() = default;
+
+    static bool ChooseEditorColor(HWND owner, COLORREF& color, COLORREF customColors[16])
+    {
+        CHOOSECOLORW dialog{};
+        dialog.lStructSize = sizeof(dialog);
+        dialog.hwndOwner = owner;
+        dialog.rgbResult = color;
+        dialog.lpCustColors = customColors;
+        dialog.Flags = CC_FULLOPEN | CC_RGBINIT;
+        if (!ChooseColorW(&dialog))
+        {
+            return false;
+        }
+
+        color = dialog.rgbResult;
+        return true;
+    }
+
+    static POINT SnapLineEndpoint(POINT start, POINT end)
+    {
+        const double dx = static_cast<double>(end.x - start.x);
+        const double dy = static_cast<double>(end.y - start.y);
+        const double distance = std::sqrt((dx * dx) + (dy * dy));
+        if (distance <= 0.0)
+        {
+            return end;
+        }
+
+        const double angle = std::atan2(dy, dx);
+        const double increment = (3.14159265358979323846 * kAngleSnapIncrementDegrees) / 180.0;
+        const double snappedAngle = std::round(angle / increment) * increment;
+        POINT point{};
+        point.x = static_cast<LONG>(std::round(start.x + (distance * std::cos(snappedAngle))));
+        point.y = static_cast<LONG>(std::round(start.y + (distance * std::sin(snappedAngle))));
+        return point;
+    }
+
+    static RECT NormalizeShapeRect(POINT start, POINT end, bool keepAspectRatio)
+    {
+        RECT rect{};
+        if (!keepAspectRatio)
+        {
+            rect.left = std::min(start.x, end.x);
+            rect.top = std::min(start.y, end.y);
+            rect.right = std::max(start.x, end.x);
+            rect.bottom = std::max(start.y, end.y);
+            return rect;
+        }
+
+        const LONG side = std::max(std::abs(end.x - start.x), std::abs(end.y - start.y));
+        rect.left = end.x < start.x ? start.x - side : start.x;
+        rect.top = end.y < start.y ? start.y - side : start.y;
+        rect.right = rect.left + side;
+        rect.bottom = rect.top + side;
+        return rect;
+    }
 
     static POINT ClampPointToImage(const RECT& imageRect, POINT point)
     {
@@ -153,7 +221,8 @@ namespace oneshot
 
         HPEN pen = CreatePen(PS_SOLID, state.thickness, state.color);
         HGDIOBJ oldPen = SelectObject(memoryDc, pen);
-        HGDIOBJ oldBrush = SelectObject(memoryDc, GetStockObject(HOLLOW_BRUSH));
+        HBRUSH fillBrush = CreateSolidBrush(state.fillColor);
+        HGDIOBJ oldBrush = SelectObject(memoryDc, state.fillShapes ? fillBrush : GetStockObject(HOLLOW_BRUSH));
 
         switch (state.tool)
         {
@@ -165,22 +234,33 @@ namespace oneshot
             SelectObject(memoryDc, oldPen);
             DeleteObject(pen);
             SelectObject(memoryDc, oldBrush);
+            DeleteObject(fillBrush);
             MarkupEditorWindow::DrawArrow(memoryDc, startPoint, endPoint, state.color, state.thickness);
+            pen = nullptr;
             break;
         case MarkupEditorWindow::Tool::Rectangle:
-            Rectangle(memoryDc, startPoint.x, startPoint.y, endPoint.x, endPoint.y);
-            SelectObject(memoryDc, oldBrush);
-            DeleteObject(pen);
+        {
+            RECT rect = NormalizeShapeRect(startPoint, endPoint, false);
+            Rectangle(memoryDc, rect.left, rect.top, rect.right, rect.bottom);
             break;
+        }
         case MarkupEditorWindow::Tool::Ellipse:
-            Ellipse(memoryDc, startPoint.x, startPoint.y, endPoint.x, endPoint.y);
-            SelectObject(memoryDc, oldBrush);
-            DeleteObject(pen);
+        {
+            RECT rect = NormalizeShapeRect(startPoint, endPoint, false);
+            Ellipse(memoryDc, rect.left, rect.top, rect.right, rect.bottom);
             break;
+        }
         default:
             break;
         }
 
+        SelectObject(memoryDc, oldBrush);
+        DeleteObject(fillBrush);
+        if (pen)
+        {
+            SelectObject(memoryDc, oldPen);
+            DeleteObject(pen);
+        }
         SelectObject(memoryDc, previous);
         DeleteDC(memoryDc);
         ReleaseDC(nullptr, screenDc);
@@ -265,21 +345,38 @@ namespace oneshot
             HPEN pen = CreatePen(PS_DOT, 2, state.color);
             HGDIOBJ oldPen = SelectObject(hdc, pen);
             HGDIOBJ oldBrush = SelectObject(hdc, GetStockObject(HOLLOW_BRUSH));
+            const bool keepAspectRatio = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
             switch (state.tool)
             {
             case MarkupEditorWindow::Tool::Line:
+            {
+                if (keepAspectRatio)
+                {
+                    previewEnd = SnapLineEndpoint(previewStart, previewEnd);
+                }
                 MoveToEx(hdc, previewStart.x, previewStart.y, nullptr);
                 LineTo(hdc, previewEnd.x, previewEnd.y);
                 break;
+            }
             case MarkupEditorWindow::Tool::Arrow:
+                if (keepAspectRatio)
+                {
+                    previewEnd = SnapLineEndpoint(previewStart, previewEnd);
+                }
                 MarkupEditorWindow::DrawArrow(hdc, previewStart, previewEnd, state.color, 2);
                 break;
             case MarkupEditorWindow::Tool::Rectangle:
-                Rectangle(hdc, previewStart.x, previewStart.y, previewEnd.x, previewEnd.y);
+            {
+                RECT rect = NormalizeShapeRect(previewStart, previewEnd, keepAspectRatio);
+                Rectangle(hdc, rect.left, rect.top, rect.right, rect.bottom);
                 break;
+            }
             case MarkupEditorWindow::Tool::Ellipse:
-                Ellipse(hdc, previewStart.x, previewStart.y, previewEnd.x, previewEnd.y);
+            {
+                RECT rect = NormalizeShapeRect(previewStart, previewEnd, keepAspectRatio);
+                Ellipse(hdc, rect.left, rect.top, rect.right, rect.bottom);
                 break;
+            }
             default:
                 break;
             }
@@ -377,14 +474,21 @@ namespace oneshot
             CreateWindowExW(0, L"Button", L"Rect", WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON, 230, 8, 70, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kToolRectId)), GetModuleHandleW(nullptr), nullptr);
             CreateWindowExW(0, L"Button", L"Ellipse", WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON, 304, 8, 70, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kToolEllipseId)), GetModuleHandleW(nullptr), nullptr);
             CreateWindowExW(0, L"Button", L"Text", WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON, 378, 8, 70, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kToolTextId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Undo", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 470, 8, 70, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kUndoId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Redo", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 544, 8, 70, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kRedoId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Copy", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 618, 8, 70, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCopyId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Done", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 692, 8, 70, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDoneId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Cancel", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 766, 8, 70, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCancelId)), GetModuleHandleW(nullptr), nullptr);
-            state->textInput = CreateWindowExW(WS_EX_CLIENTEDGE, L"Edit", L"Text", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 850, 8, 220, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTextInputId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Color", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 470, 8, 60, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kStrokeColorId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Fill", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 534, 8, 44, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFillToggleId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"T-", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 582, 8, 34, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kThicknessDownId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"T+", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 620, 8, 34, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kThicknessUpId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"F-", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 658, 8, 34, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFontDownId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"F+", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 696, 8, 34, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFontUpId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Undo", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 734, 8, 52, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kUndoId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Redo", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 790, 8, 52, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kRedoId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Copy", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 846, 8, 52, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCopyId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Done", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 902, 8, 52, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDoneId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Cancel", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 958, 8, 60, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCancelId)), GetModuleHandleW(nullptr), nullptr);
+            state->textInput = CreateWindowExW(WS_EX_CLIENTEDGE, L"Edit", L"Text", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 1022, 8, 70, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTextInputId)), GetModuleHandleW(nullptr), nullptr);
             state->canvas = CreateWindowExW(0, L"OneShotNative.MarkupCanvas", L"", WS_CHILD | WS_VISIBLE, 0, kToolbarHeight, 100, 100, hwnd, nullptr, GetModuleHandleW(nullptr), state);
             UpdateToolButtons(*state);
+            CheckDlgButton(hwnd, kFillToggleId, BST_CHECKED);
             return 0;
         case WM_SIZE:
             if (state->canvas)
@@ -433,6 +537,25 @@ namespace oneshot
                 (void)state->outputService->CopyToClipboard(hwnd, state->currentImage, error);
                 return 0;
             }
+            case kStrokeColorId:
+                ChooseEditorColor(hwnd, state->color, state->customColors);
+                InvalidateRect(state->canvas, nullptr, TRUE);
+                return 0;
+            case kFillToggleId:
+                state->fillShapes = IsDlgButtonChecked(hwnd, kFillToggleId) == BST_CHECKED;
+                return 0;
+            case kThicknessDownId:
+                state->thickness = std::max(1, state->thickness - 1);
+                return 0;
+            case kThicknessUpId:
+                state->thickness = std::min(16, state->thickness + 1);
+                return 0;
+            case kFontDownId:
+                state->fontSize = std::max(8, state->fontSize - 2);
+                return 0;
+            case kFontUpId:
+                state->fontSize = std::min(96, state->fontSize + 2);
+                return 0;
             case kDoneId:
                 state->resultImage = std::move(state->currentImage);
                 state->finished = true;
@@ -450,6 +573,21 @@ namespace oneshot
             state->finished = true;
             DestroyWindow(hwnd);
             return 0;
+        case WM_KEYDOWN:
+            if ((GetKeyState(VK_CONTROL) & 0x8000) != 0)
+            {
+                if (wParam == 'Z')
+                {
+                    SendMessageW(hwnd, WM_COMMAND, kUndoId, 0);
+                    return 0;
+                }
+                if (wParam == 'Y')
+                {
+                    SendMessageW(hwnd, WM_COMMAND, kRedoId, 0);
+                    return 0;
+                }
+            }
+            break;
         case WM_DESTROY:
             return 0;
         default:
@@ -507,8 +645,12 @@ namespace oneshot
                     HGDIOBJ previous = SelectObject(memoryDc, state->currentImage.bitmap);
                     SetBkMode(memoryDc, TRANSPARENT);
                     SetTextColor(memoryDc, state->color);
+                    HFONT font = CreateFontW(state->fontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+                    HGDIOBJ oldFont = SelectObject(memoryDc, font);
                     POINT mapped = ClientToImagePoint(state->imageRect, state->currentImage, point);
                     TextOutW(memoryDc, mapped.x, mapped.y, text, static_cast<int>(wcslen(text)));
+                    SelectObject(memoryDc, oldFont);
+                    DeleteObject(font);
                     SelectObject(memoryDc, previous);
                     DeleteDC(memoryDc);
                     ReleaseDC(nullptr, screenDc);
@@ -564,6 +706,17 @@ namespace oneshot
                     PushUndoState(*state);
                     POINT start = ClientToImagePoint(state->imageRect, state->currentImage, state->dragStart);
                     POINT end = ClientToImagePoint(state->imageRect, state->currentImage, point);
+                    const bool keepAspectRatio = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                    if (state->tool == Tool::Line || state->tool == Tool::Arrow)
+                    {
+                        end = SnapLineEndpoint(start, end);
+                    }
+                    else if (state->tool == Tool::Rectangle || state->tool == Tool::Ellipse)
+                    {
+                        const RECT rect = NormalizeShapeRect(start, end, keepAspectRatio);
+                        start = { rect.left, rect.top };
+                        end = { rect.right, rect.bottom };
+                    }
                     CommitPreview(*state, start, end);
                     state->previewActive = false;
                     InvalidateRect(hwnd, nullptr, TRUE);

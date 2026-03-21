@@ -37,6 +37,7 @@ target_compile_definitions(oneshot PRIVATE
 
 target_link_libraries(oneshot PRIVATE
     comctl32
+    comdlg32
     gdi32
     msimg32
     windowscodecs
