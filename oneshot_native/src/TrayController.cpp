@@ -24,6 +24,12 @@ namespace oneshot
         return _initialized;
     }
 
+    void TrayController::Restore(HWND hwnd)
+    {
+        Dispose();
+        (void)Initialize(hwnd);
+    }
+
     void TrayController::Dispose()
     {
         if (!_initialized)

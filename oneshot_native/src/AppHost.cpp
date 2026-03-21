@@ -354,6 +354,13 @@ namespace oneshot
 
         switch (message)
         {
+        default:
+            if (message == self->_tray.ExplorerRestartMessage())
+            {
+                self->_tray.Restore(hwnd);
+                return 0;
+            }
+            break;
         case WM_TIMER:
             if (wParam == kOverlayPrewarmTimerId)
             {
@@ -393,8 +400,6 @@ namespace oneshot
         case WM_DESTROY:
             PostQuitMessage(0);
             return 0;
-        default:
-            break;
         }
 
         return DefWindowProcW(hwnd, message, wParam, lParam);

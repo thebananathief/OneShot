@@ -12,11 +12,14 @@ namespace oneshot
 
         bool Initialize(HWND hwnd);
         void Dispose();
+        void Restore(HWND hwnd);
         void ShowContextMenu(HWND hwnd) const;
         void ShowBalloon(std::wstring_view title, std::wstring_view text) const;
+        [[nodiscard]] UINT ExplorerRestartMessage() const noexcept { return _explorerRestartMessage; }
 
     private:
         NOTIFYICONDATAW _iconData{};
         bool _initialized{false};
+        UINT _explorerRestartMessage{RegisterWindowMessageW(L"TaskbarCreated")};
     };
 }
