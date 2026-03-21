@@ -5,6 +5,7 @@
 #include <shlwapi.h>
 
 #include <atomic>
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <functional>

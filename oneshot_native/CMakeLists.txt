@@ -14,6 +14,9 @@ add_executable(oneshot WIN32
     src/CommandProtocol.cpp
     src/CommandServer.cpp
     src/DiagnosticsService.cpp
+    src/DragDropService.cpp
+    src/NotificationManager.cpp
+    src/OverlayManager.cpp
     src/OutputService.cpp
     src/PathService.cpp
     src/StartupService.cpp
@@ -32,7 +35,9 @@ target_compile_definitions(oneshot PRIVATE
 )
 
 target_link_libraries(oneshot PRIVATE
+    comctl32
     gdi32
+    msimg32
     windowscodecs
     ole32
     shell32

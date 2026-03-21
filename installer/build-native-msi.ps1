@@ -30,11 +30,14 @@ New-Item -ItemType Directory -Force $buildDir | Out-Null
 New-Item -ItemType Directory -Force $publishDir | Out-Null
 
 cmake -S $sourceDir -B $buildDir -G "Visual Studio 17 2022" -A x64
+if ($LASTEXITCODE -ne 0) { throw "CMake configure failed." }
 cmake --build $buildDir --config Release
+if ($LASTEXITCODE -ne 0) { throw "Native build failed." }
 
 Copy-Item (Join-Path $buildDir "Release\\oneshot.exe") $publishDir -Force
 
 wix build (Join-Path $root "installer\\OneShot.Native.wxs") -arch x64 -d PublishDir=$publishDir -d ProductVersion=$productVersion -o $msiOut
+if ($LASTEXITCODE -ne 0) { throw "WiX build failed." }
 
 Write-Host "Native MSI built at: $msiOut"
 Write-Host "Native MSI ProductVersion: $productVersion"

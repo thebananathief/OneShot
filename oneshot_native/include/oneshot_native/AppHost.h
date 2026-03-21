@@ -4,6 +4,8 @@
 #include "oneshot_native/CommandClient.h"
 #include "oneshot_native/CommandServer.h"
 #include "oneshot_native/DiagnosticsService.h"
+#include "oneshot_native/NotificationManager.h"
+#include "oneshot_native/OverlayManager.h"
 #include "oneshot_native/OutputService.h"
 #include "oneshot_native/StartupService.h"
 #include "oneshot_native/TempFileManager.h"
@@ -48,6 +50,8 @@ namespace oneshot
         StartupService _startupService;
         DiagnosticsService _diagnostics;
         CaptureService _captureService;
+        OverlayManager _overlayManager;
+        NotificationManager _notificationManager;
         OutputService _outputService;
         TrayController _tray;
         CommandServer _server;

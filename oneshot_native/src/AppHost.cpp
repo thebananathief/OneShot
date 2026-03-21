@@ -73,6 +73,7 @@ namespace oneshot
         , _tempFileManager(_paths)
         , _startupService(_paths)
         , _diagnostics(_paths)
+        , _notificationManager(_paths)
         , _outputService(_paths)
         , _server([this](const CommandEnvelope& envelope) { return HandleCommand(envelope); })
     {
@@ -80,6 +81,7 @@ namespace oneshot
 
     AppHost::~AppHost()
     {
+        _notificationManager.CloseAll();
         _server.Stop();
         _tray.Dispose();
 
@@ -197,10 +199,23 @@ namespace oneshot
 
     void AppHost::HandleSnapshotRequested()
     {
-        const auto capture = _captureService.CaptureVirtualScreen();
-        if (!capture.has_value())
+        const auto virtualCapture = _captureService.CaptureVirtualScreen();
+        if (!virtualCapture.has_value())
         {
             _tray.ShowBalloon(L"OneShot", L"Virtual screen capture failed.");
+            return;
+        }
+
+        const auto selection = _overlayManager.SelectRegion(*virtualCapture, _hwnd);
+        if (!selection.has_value())
+        {
+            return;
+        }
+
+        const auto capture = _captureService.Crop(*virtualCapture, *selection);
+        if (!capture.has_value())
+        {
+            _tray.ShowBalloon(L"OneShot", L"Failed to crop the selected region.");
             return;
         }
 
@@ -229,8 +244,7 @@ namespace oneshot
             return;
         }
 
-        const auto notification = std::wstring(L"Saved ") + savedPath.filename().wstring() + L" and copied it to the clipboard.";
-        _tray.ShowBalloon(L"OneShot", notification);
+        _notificationManager.Show(_hwnd, *capture, savedPath, dragPath);
     }
 
     CommandResponse AppHost::HandleCommand(const CommandEnvelope& envelope)
