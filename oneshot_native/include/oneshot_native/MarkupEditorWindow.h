@@ -19,6 +19,7 @@ namespace oneshot
             Arrow,
             Rectangle,
             Ellipse,
+            Polygon,
             Text
         };
 

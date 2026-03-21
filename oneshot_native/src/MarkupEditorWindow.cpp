@@ -14,7 +14,8 @@ namespace
     constexpr int kToolArrowId = 2003;
     constexpr int kToolRectId = 2004;
     constexpr int kToolEllipseId = 2005;
-    constexpr int kToolTextId = 2006;
+    constexpr int kToolPolygonId = 2006;
+    constexpr int kToolTextId = 2007;
     constexpr int kUndoId = 2010;
     constexpr int kRedoId = 2011;
     constexpr int kCopyId = 2012;
@@ -57,6 +58,8 @@ namespace oneshot
         bool previewActive{false};
         POINT dragStart{};
         POINT dragCurrent{};
+        std::vector<POINT> polygonPoints;
+        bool polygonInProgress{false};
         COLORREF color{RGB(255, 0, 0)};
         COLORREF fillColor{RGB(255, 224, 224)};
         int thickness{3};
@@ -128,6 +131,40 @@ namespace oneshot
         rect.right = rect.left + side;
         rect.bottom = rect.top + side;
         return rect;
+    }
+
+    static void DrawPolygonPreview(HDC hdc, const RECT& canvasRect, const CapturedImage& image, const std::vector<POINT>& polygonPoints, std::optional<POINT> currentPoint)
+    {
+        if (polygonPoints.empty())
+        {
+            return;
+        }
+
+        const auto scaleX = static_cast<double>(canvasRect.right - canvasRect.left) / std::max(1, image.width);
+        const auto scaleY = static_cast<double>(canvasRect.bottom - canvasRect.top) / std::max(1, image.height);
+
+        std::vector<POINT> preview;
+        preview.reserve(polygonPoints.size() + (currentPoint.has_value() ? 1 : 0));
+        for (const auto point : polygonPoints)
+        {
+            preview.push_back({
+                canvasRect.left + static_cast<LONG>(std::round(point.x * scaleX)),
+                canvasRect.top + static_cast<LONG>(std::round(point.y * scaleY))
+            });
+        }
+
+        if (currentPoint.has_value())
+        {
+            preview.push_back({
+                canvasRect.left + static_cast<LONG>(std::round(currentPoint->x * scaleX)),
+                canvasRect.top + static_cast<LONG>(std::round(currentPoint->y * scaleY))
+            });
+        }
+
+        if (preview.size() >= 2)
+        {
+            Polyline(hdc, preview.data(), static_cast<int>(preview.size()));
+        }
     }
 
     static POINT ClampPointToImage(const RECT& imageRect, POINT point)
@@ -250,6 +287,12 @@ namespace oneshot
             Ellipse(memoryDc, rect.left, rect.top, rect.right, rect.bottom);
             break;
         }
+        case MarkupEditorWindow::Tool::Polygon:
+            if (state.polygonPoints.size() >= 3)
+            {
+                Polygon(memoryDc, state.polygonPoints.data(), static_cast<int>(state.polygonPoints.size()));
+            }
+            break;
         default:
             break;
         }
@@ -294,6 +337,7 @@ namespace oneshot
             state.tool == MarkupEditorWindow::Tool::Arrow ? kToolArrowId :
             state.tool == MarkupEditorWindow::Tool::Rectangle ? kToolRectId :
             state.tool == MarkupEditorWindow::Tool::Ellipse ? kToolEllipseId :
+            state.tool == MarkupEditorWindow::Tool::Polygon ? kToolPolygonId :
             kToolTextId);
     }
 
@@ -327,7 +371,13 @@ namespace oneshot
 
         FrameRect(hdc, &canvasRect, static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
 
-        if (state.previewActive && state.tool != MarkupEditorWindow::Tool::Pen)
+        if (state.tool == MarkupEditorWindow::Tool::Polygon && state.polygonInProgress)
+        {
+            const POINT current = ClientToImagePoint(state.imageRect, state.currentImage, state.dragCurrent);
+            DrawPolygonPreview(hdc, canvasRect, state.currentImage, state.polygonPoints, current);
+        }
+
+        if (state.previewActive && state.tool != MarkupEditorWindow::Tool::Pen && state.tool != MarkupEditorWindow::Tool::Polygon)
         {
             const POINT start = ClientToImagePoint(state.imageRect, state.currentImage, state.dragStart);
             const POINT end = ClientToImagePoint(state.imageRect, state.currentImage, state.dragCurrent);
@@ -473,19 +523,20 @@ namespace oneshot
             CreateWindowExW(0, L"Button", L"Arrow", WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON, 156, 8, 70, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kToolArrowId)), GetModuleHandleW(nullptr), nullptr);
             CreateWindowExW(0, L"Button", L"Rect", WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON, 230, 8, 70, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kToolRectId)), GetModuleHandleW(nullptr), nullptr);
             CreateWindowExW(0, L"Button", L"Ellipse", WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON, 304, 8, 70, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kToolEllipseId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Text", WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON, 378, 8, 70, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kToolTextId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Color", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 470, 8, 60, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kStrokeColorId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Fill", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 534, 8, 44, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFillToggleId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"T-", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 582, 8, 34, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kThicknessDownId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"T+", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 620, 8, 34, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kThicknessUpId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"F-", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 658, 8, 34, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFontDownId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"F+", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 696, 8, 34, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFontUpId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Undo", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 734, 8, 52, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kUndoId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Redo", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 790, 8, 52, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kRedoId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Copy", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 846, 8, 52, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCopyId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Done", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 902, 8, 52, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDoneId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Cancel", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 958, 8, 60, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCancelId)), GetModuleHandleW(nullptr), nullptr);
-            state->textInput = CreateWindowExW(WS_EX_CLIENTEDGE, L"Edit", L"Text", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 1022, 8, 70, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTextInputId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Poly", WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON, 378, 8, 56, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kToolPolygonId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Text", WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON, 438, 8, 56, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kToolTextId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Color", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 498, 8, 54, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kStrokeColorId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Fill", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 556, 8, 42, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFillToggleId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"T-", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 602, 8, 30, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kThicknessDownId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"T+", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 636, 8, 30, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kThicknessUpId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"F-", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 670, 8, 30, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFontDownId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"F+", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 704, 8, 30, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFontUpId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Undo", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 738, 8, 48, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kUndoId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Redo", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 790, 8, 48, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kRedoId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Copy", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 842, 8, 48, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCopyId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Done", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 894, 8, 48, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDoneId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Cancel", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 946, 8, 58, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCancelId)), GetModuleHandleW(nullptr), nullptr);
+            state->textInput = CreateWindowExW(WS_EX_CLIENTEDGE, L"Edit", L"Text", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 1008, 8, 84, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTextInputId)), GetModuleHandleW(nullptr), nullptr);
             state->canvas = CreateWindowExW(0, L"OneShotNative.MarkupCanvas", L"", WS_CHILD | WS_VISIBLE, 0, kToolbarHeight, 100, 100, hwnd, nullptr, GetModuleHandleW(nullptr), state);
             UpdateToolButtons(*state);
             CheckDlgButton(hwnd, kFillToggleId, BST_CHECKED);
@@ -504,6 +555,7 @@ namespace oneshot
             case kToolArrowId: state->tool = Tool::Arrow; UpdateToolButtons(*state); return 0;
             case kToolRectId: state->tool = Tool::Rectangle; UpdateToolButtons(*state); return 0;
             case kToolEllipseId: state->tool = Tool::Ellipse; UpdateToolButtons(*state); return 0;
+            case kToolPolygonId: state->tool = Tool::Polygon; UpdateToolButtons(*state); return 0;
             case kToolTextId: state->tool = Tool::Text; UpdateToolButtons(*state); return 0;
             case kUndoId:
                 if (!state->undoStack.empty())
@@ -633,6 +685,23 @@ namespace oneshot
             {
                 PushUndoState(*state);
             }
+            else if (state->tool == Tool::Polygon)
+            {
+                const POINT mapped = ClientToImagePoint(state->imageRect, state->currentImage, point);
+                if (!state->polygonInProgress)
+                {
+                    PushUndoState(*state);
+                    state->polygonPoints.clear();
+                    state->polygonInProgress = true;
+                }
+
+                state->polygonPoints.push_back(mapped);
+                state->previewActive = true;
+                state->dragCurrent = point;
+                ReleaseCapture();
+                state->isDrawing = false;
+                InvalidateRect(hwnd, nullptr, TRUE);
+            }
             else if (state->tool == Tool::Text)
             {
                 wchar_t text[256]{};
@@ -666,6 +735,14 @@ namespace oneshot
             return 0;
         }
         case WM_MOUSEMOVE:
+            if (state->tool == Tool::Polygon && state->polygonInProgress)
+            {
+                POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) + kToolbarHeight };
+                state->dragCurrent = ClampPointToImage(state->imageRect, point);
+                InvalidateRect(hwnd, nullptr, TRUE);
+                return 0;
+            }
+
             if (state->isDrawing && (wParam & MK_LBUTTON))
             {
                 POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) + kToolbarHeight };
@@ -724,6 +801,20 @@ namespace oneshot
 
                 state->isDrawing = false;
                 ReleaseCapture();
+            }
+            return 0;
+        case WM_RBUTTONUP:
+            if (state->tool == Tool::Polygon && state->polygonInProgress)
+            {
+                if (state->polygonPoints.size() >= 3)
+                {
+                    CommitPreview(*state, { 0, 0 }, { 0, 0 });
+                }
+
+                state->polygonPoints.clear();
+                state->polygonInProgress = false;
+                state->previewActive = false;
+                InvalidateRect(hwnd, nullptr, TRUE);
             }
             return 0;
         case WM_PAINT:
