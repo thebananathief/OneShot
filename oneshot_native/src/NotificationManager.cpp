@@ -9,6 +9,7 @@ namespace
     constexpr int kNotificationHeight = 124;
     constexpr int kNotificationMargin = 16;
     constexpr int kNotificationGap = 8;
+    constexpr UINT_PTR kPulseTimerId = 1;
     constexpr int kThumbControlId = 100;
     constexpr int kMarkupButtonId = 101;
     constexpr int kDismissButtonId = 102;
@@ -39,6 +40,11 @@ namespace oneshot
         POINT dragAnchor{};
         bool pointerDown{false};
         bool dragInProgress{false};
+        COLORREF baseBackgroundColor{RGB(45, 45, 48)};
+        COLORREF pulseBackgroundColor{RGB(61, 121, 216)};
+        COLORREF backgroundColor{RGB(45, 45, 48)};
+        HBRUSH backgroundBrush{nullptr};
+        int pulseFrame{0};
     };
 
     static LRESULT CALLBACK NotificationWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
@@ -60,6 +66,41 @@ namespace oneshot
 
         switch (message)
         {
+        case WM_ERASEBKGND:
+        {
+            RECT client{};
+            GetClientRect(hwnd, &client);
+            FillRect(reinterpret_cast<HDC>(wParam), &client, notification->backgroundBrush);
+            return TRUE;
+        }
+        case WM_CTLCOLORSTATIC:
+        {
+            auto dc = reinterpret_cast<HDC>(wParam);
+            SetBkMode(dc, TRANSPARENT);
+            SetTextColor(dc, RGB(240, 240, 240));
+            return reinterpret_cast<INT_PTR>(notification->backgroundBrush);
+        }
+        case WM_TIMER:
+            if (wParam == kPulseTimerId)
+            {
+                notification->pulseFrame++;
+                notification->backgroundColor = notification->pulseFrame == 1 ? notification->pulseBackgroundColor : notification->baseBackgroundColor;
+                if (notification->backgroundBrush)
+                {
+                    DeleteObject(notification->backgroundBrush);
+                }
+                notification->backgroundBrush = CreateSolidBrush(notification->backgroundColor);
+                InvalidateRect(hwnd, nullptr, TRUE);
+                UpdateWindow(hwnd);
+
+                if (notification->pulseFrame >= 2)
+                {
+                    KillTimer(hwnd, kPulseTimerId);
+                    notification->pulseFrame = 0;
+                }
+                return 0;
+            }
+            break;
         case WM_COMMAND:
             switch (LOWORD(wParam))
             {
@@ -110,10 +151,16 @@ namespace oneshot
             }
             return 0;
         case WM_DESTROY:
+            KillTimer(hwnd, kPulseTimerId);
             if (notification->thumbnailBitmap)
             {
                 DeleteObject(notification->thumbnailBitmap);
                 notification->thumbnailBitmap = nullptr;
+            }
+            if (notification->backgroundBrush)
+            {
+                DeleteObject(notification->backgroundBrush);
+                notification->backgroundBrush = nullptr;
             }
             return 0;
         default:
@@ -149,6 +196,7 @@ namespace oneshot
         notification->image = std::move(image);
         notification->savedPath = savedPath;
         notification->dragPath = dragPath;
+        notification->backgroundBrush = CreateSolidBrush(notification->backgroundColor);
 
         notification->hwnd = CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
@@ -177,6 +225,8 @@ namespace oneshot
 
         notification->thumbnailBitmap = static_cast<HBITMAP>(CopyImage(notification->image.bitmap, IMAGE_BITMAP, 96, 72, LR_CREATEDIBSECTION));
         SendMessageW(notification->thumbnail, STM_SETIMAGE, IMAGE_BITMAP, reinterpret_cast<LPARAM>(notification->thumbnailBitmap));
+        SendMessageW(notification->titleLabel, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
+        SendMessageW(notification->pathLabel, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
 
         ShowWindow(notification->hwnd, SW_SHOW);
         _notifications.insert(_notifications.begin(), std::move(notification));
@@ -237,6 +287,15 @@ namespace oneshot
 
         notification->thumbnailBitmap = static_cast<HBITMAP>(CopyImage(notification->image.bitmap, IMAGE_BITMAP, 96, 72, LR_CREATEDIBSECTION));
         SendMessageW(notification->thumbnail, STM_SETIMAGE, IMAGE_BITMAP, reinterpret_cast<LPARAM>(notification->thumbnailBitmap));
+        KillTimer(notification->hwnd, kPulseTimerId);
+        notification->pulseFrame = 0;
+        notification->backgroundColor = notification->baseBackgroundColor;
+        if (notification->backgroundBrush)
+        {
+            DeleteObject(notification->backgroundBrush);
+        }
+        notification->backgroundBrush = CreateSolidBrush(notification->backgroundColor);
+        SetTimer(notification->hwnd, kPulseTimerId, 250, nullptr);
         InvalidateRect(notification->hwnd, nullptr, TRUE);
     }
 

@@ -8,6 +8,9 @@ namespace
 {
     constexpr int kToolbarHeight = 42;
     constexpr int kMargin = 8;
+    constexpr double kMaxZoom = 8.0;
+    constexpr double kFitPaddingFactor = 0.99;
+    constexpr double kZoomStep = 1.1;
 
     constexpr int kToolPenId = 2001;
     constexpr int kToolLineId = 2002;
@@ -28,6 +31,8 @@ namespace
     constexpr int kFillToggleId = 2019;
     constexpr int kFontDownId = 2020;
     constexpr int kFontUpId = 2021;
+    constexpr int kFitId = 2022;
+    constexpr int kFontComboId = 2023;
     constexpr int kAngleSnapIncrementDegrees = 15;
 
     RECT MakeRect(int left, int top, int right, int bottom)
@@ -68,6 +73,18 @@ namespace oneshot
         bool finished{false};
         OutputService* outputService{nullptr};
         COLORREF customColors[16]{};
+        HWND fontCombo{nullptr};
+        double zoom{1.0};
+        double minimumZoom{1.0};
+        double viewportOffsetX{0.0};
+        double viewportOffsetY{0.0};
+        bool hasInitialFit{false};
+        bool userAdjustedViewport{false};
+        bool middlePanning{false};
+        POINT middlePanStart{};
+        double middlePanOffsetX{0.0};
+        double middlePanOffsetY{0.0};
+        std::wstring fontFace{L"Segoe UI"};
     };
 
     MarkupEditorWindow::MarkupEditorWindow(OutputService& outputService)
@@ -133,32 +150,148 @@ namespace oneshot
         return rect;
     }
 
-    static void DrawPolygonPreview(HDC hdc, const RECT& canvasRect, const CapturedImage& image, const std::vector<POINT>& polygonPoints, std::optional<POINT> currentPoint)
+    static RECT GetCanvasClientRect(HWND hwnd)
+    {
+        RECT client{};
+        GetClientRect(hwnd, &client);
+        client.left += kMargin;
+        client.top += kMargin;
+        client.right -= kMargin;
+        client.bottom -= kMargin;
+        return client;
+    }
+
+    static double ComputeFitZoom(HWND canvas, const CapturedImage& image)
+    {
+        RECT client = GetCanvasClientRect(canvas);
+        const int availableWidth = std::max(1, static_cast<int>(client.right - client.left));
+        const int availableHeight = std::max(1, static_cast<int>(client.bottom - client.top));
+        const double scaleX = static_cast<double>(availableWidth) / static_cast<double>(image.width);
+        const double scaleY = static_cast<double>(availableHeight) / static_cast<double>(image.height);
+        const double fit = std::min(scaleX, scaleY) * kFitPaddingFactor;
+        return std::clamp(fit, 0.05, kMaxZoom);
+    }
+
+    static void ClampViewportOffsets(MarkupEditorWindow::State& state)
+    {
+        if (!state.canvas)
+        {
+            return;
+        }
+
+        RECT client = GetCanvasClientRect(state.canvas);
+        const double clientWidth = std::max(1.0, static_cast<double>(client.right - client.left));
+        const double clientHeight = std::max(1.0, static_cast<double>(client.bottom - client.top));
+        const double contentWidth = state.currentImage.width * state.zoom;
+        const double contentHeight = state.currentImage.height * state.zoom;
+        const double maxOffsetX = std::max(0.0, contentWidth - clientWidth);
+        const double maxOffsetY = std::max(0.0, contentHeight - clientHeight);
+
+        if (contentWidth <= clientWidth)
+        {
+            state.viewportOffsetX = 0.0;
+        }
+        else
+        {
+            state.viewportOffsetX = std::clamp(state.viewportOffsetX, 0.0, maxOffsetX);
+        }
+
+        if (contentHeight <= clientHeight)
+        {
+            state.viewportOffsetY = 0.0;
+        }
+        else
+        {
+            state.viewportOffsetY = std::clamp(state.viewportOffsetY, 0.0, maxOffsetY);
+        }
+    }
+
+    static RECT ComputeImageRect(MarkupEditorWindow::State& state)
+    {
+        RECT client = GetCanvasClientRect(state.canvas);
+        const double clientWidth = std::max(1.0, static_cast<double>(client.right - client.left));
+        const double clientHeight = std::max(1.0, static_cast<double>(client.bottom - client.top));
+        const double drawWidth = std::max(1.0, state.currentImage.width * state.zoom);
+        const double drawHeight = std::max(1.0, state.currentImage.height * state.zoom);
+        const double hostOriginX = std::max(0.0, (clientWidth - drawWidth) / 2.0);
+        const double hostOriginY = std::max(0.0, (clientHeight - drawHeight) / 2.0);
+
+        RECT rect{};
+        rect.left = static_cast<LONG>(std::lround(client.left + hostOriginX - state.viewportOffsetX));
+        rect.top = static_cast<LONG>(std::lround(client.top + hostOriginY - state.viewportOffsetY));
+        rect.right = static_cast<LONG>(std::lround(rect.left + drawWidth));
+        rect.bottom = static_cast<LONG>(std::lround(rect.top + drawHeight));
+        return rect;
+    }
+
+    static void FitImageToViewport(MarkupEditorWindow::State& state)
+    {
+        if (!state.canvas)
+        {
+            return;
+        }
+
+        state.minimumZoom = ComputeFitZoom(state.canvas, state.currentImage);
+        state.zoom = state.minimumZoom;
+        state.viewportOffsetX = 0.0;
+        state.viewportOffsetY = 0.0;
+        state.hasInitialFit = true;
+        state.imageRect = ComputeImageRect(state);
+    }
+
+    static void UpdateZoomBounds(MarkupEditorWindow::State& state, bool forceFitIfAtMinimum)
+    {
+        if (!state.canvas)
+        {
+            return;
+        }
+
+        const bool wasAtMinimum = std::abs(state.zoom - state.minimumZoom) < 0.0001;
+        state.minimumZoom = ComputeFitZoom(state.canvas, state.currentImage);
+        if (!state.hasInitialFit)
+        {
+            FitImageToViewport(state);
+        }
+        else
+        {
+            state.zoom = std::clamp(state.zoom, state.minimumZoom, kMaxZoom);
+            ClampViewportOffsets(state);
+            if (forceFitIfAtMinimum && wasAtMinimum)
+            {
+                FitImageToViewport(state);
+            }
+            else
+            {
+                state.imageRect = ComputeImageRect(state);
+            }
+        }
+    }
+
+    static POINT ImagePointToClientPoint(const RECT& imageRect, double zoom, POINT point)
+    {
+        POINT mapped{};
+        mapped.x = static_cast<LONG>(std::lround(imageRect.left + (point.x * zoom)));
+        mapped.y = static_cast<LONG>(std::lround(imageRect.top + (point.y * zoom)));
+        return mapped;
+    }
+
+    static void DrawPolygonPreview(HDC hdc, const RECT& canvasRect, const CapturedImage& image, double zoom, const std::vector<POINT>& polygonPoints, std::optional<POINT> currentPoint)
     {
         if (polygonPoints.empty())
         {
             return;
         }
 
-        const auto scaleX = static_cast<double>(canvasRect.right - canvasRect.left) / std::max(1, image.width);
-        const auto scaleY = static_cast<double>(canvasRect.bottom - canvasRect.top) / std::max(1, image.height);
-
         std::vector<POINT> preview;
         preview.reserve(polygonPoints.size() + (currentPoint.has_value() ? 1 : 0));
         for (const auto point : polygonPoints)
         {
-            preview.push_back({
-                canvasRect.left + static_cast<LONG>(std::round(point.x * scaleX)),
-                canvasRect.top + static_cast<LONG>(std::round(point.y * scaleY))
-            });
+            preview.push_back(ImagePointToClientPoint(canvasRect, zoom, point));
         }
 
         if (currentPoint.has_value())
         {
-            preview.push_back({
-                canvasRect.left + static_cast<LONG>(std::round(currentPoint->x * scaleX)),
-                canvasRect.top + static_cast<LONG>(std::round(currentPoint->y * scaleY))
-            });
+            preview.push_back(ImagePointToClientPoint(canvasRect, zoom, *currentPoint));
         }
 
         if (preview.size() >= 2)
@@ -169,40 +302,66 @@ namespace oneshot
 
     static POINT ClampPointToImage(const RECT& imageRect, POINT point)
     {
-        point.x = static_cast<LONG>(std::clamp(static_cast<int>(point.x), static_cast<int>(imageRect.left), static_cast<int>(imageRect.right)));
-        point.y = static_cast<LONG>(std::clamp(static_cast<int>(point.y), static_cast<int>(imageRect.top), static_cast<int>(imageRect.bottom)));
+        point.x = static_cast<LONG>(std::clamp(static_cast<int>(point.x), static_cast<int>(imageRect.left), static_cast<int>(imageRect.right - 1)));
+        point.y = static_cast<LONG>(std::clamp(static_cast<int>(point.y), static_cast<int>(imageRect.top), static_cast<int>(imageRect.bottom - 1)));
         return point;
     }
 
-    static RECT ComputeImageRect(HWND hwnd, const CapturedImage& image)
-    {
-        RECT client{};
-        GetClientRect(hwnd, &client);
-
-        const int availableWidth = std::max(1, static_cast<int>((client.right - client.left) - (kMargin * 2)));
-        const int availableHeight = std::max(1, static_cast<int>((client.bottom - client.top) - kToolbarHeight - (kMargin * 2)));
-        const double scaleX = static_cast<double>(availableWidth) / static_cast<double>(image.width);
-        const double scaleY = static_cast<double>(availableHeight) / static_cast<double>(image.height);
-        const double scale = std::min(scaleX, scaleY);
-
-        const int drawWidth = std::max(1, static_cast<int>(std::round(image.width * scale)));
-        const int drawHeight = std::max(1, static_cast<int>(std::round(image.height * scale)));
-        const int left = kMargin + ((availableWidth - drawWidth) / 2);
-        const int top = kToolbarHeight + kMargin + ((availableHeight - drawHeight) / 2);
-        return MakeRect(left, top, left + drawWidth, top + drawHeight);
-    }
-
-    static POINT ClientToImagePoint(const RECT& imageRect, const CapturedImage& image, POINT point)
+    static POINT ClientToImagePoint(const RECT& imageRect, const CapturedImage& image, double zoom, POINT point)
     {
         point = ClampPointToImage(imageRect, point);
-        const double scaleX = static_cast<double>(image.width) / std::max(1, static_cast<int>(imageRect.right - imageRect.left));
-        const double scaleY = static_cast<double>(image.height) / std::max(1, static_cast<int>(imageRect.bottom - imageRect.top));
         POINT mapped{};
-        mapped.x = static_cast<int>(std::round((point.x - imageRect.left) * scaleX));
-        mapped.y = static_cast<int>(std::round((point.y - imageRect.top) * scaleY));
+        mapped.x = static_cast<int>(std::round((point.x - imageRect.left) / std::max(0.0001, zoom)));
+        mapped.y = static_cast<int>(std::round((point.y - imageRect.top) / std::max(0.0001, zoom)));
         mapped.x = static_cast<LONG>(std::clamp(static_cast<int>(mapped.x), 0, image.width - 1));
         mapped.y = static_cast<LONG>(std::clamp(static_cast<int>(mapped.y), 0, image.height - 1));
         return mapped;
+    }
+
+    static bool ScreenToCanvasClient(HWND canvas, LPARAM lParam, POINT& point)
+    {
+        point.x = GET_X_LPARAM(lParam);
+        point.y = GET_Y_LPARAM(lParam);
+        return ScreenToClient(canvas, &point) != FALSE;
+    }
+
+    static int CALLBACK EnumFontFamiliesProc(const LOGFONTW* logFont, const TEXTMETRICW*, DWORD fontType, LPARAM lParam)
+    {
+        if ((fontType & RASTER_FONTTYPE) != 0)
+        {
+            return 1;
+        }
+
+        auto* fonts = reinterpret_cast<std::vector<std::wstring>*>(lParam);
+        const std::wstring face = logFont->lfFaceName;
+        if (std::find(fonts->begin(), fonts->end(), face) == fonts->end())
+        {
+            fonts->push_back(face);
+        }
+
+        return 1;
+    }
+
+    static void PopulateFontCombo(HWND combo, const std::wstring& selectedFont)
+    {
+        std::vector<std::wstring> fonts;
+        HDC screenDc = GetDC(nullptr);
+        LOGFONTW logFont{};
+        logFont.lfCharSet = DEFAULT_CHARSET;
+        EnumFontFamiliesExW(screenDc, &logFont, reinterpret_cast<FONTENUMPROCW>(EnumFontFamiliesProc), reinterpret_cast<LPARAM>(&fonts), 0);
+        ReleaseDC(nullptr, screenDc);
+
+        std::sort(fonts.begin(), fonts.end());
+        for (const auto& font : fonts)
+        {
+            SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(font.c_str()));
+        }
+
+        const LRESULT selection = SendMessageW(combo, CB_SELECTSTRING, static_cast<WPARAM>(-1), reinterpret_cast<LPARAM>(selectedFont.c_str()));
+        if (selection == CB_ERR && !fonts.empty())
+        {
+            SendMessageW(combo, CB_SETCURSEL, 0, 0);
+        }
     }
 
     void MarkupEditorWindow::ClearBitmapStack(std::vector<HBITMAP>& stack)
@@ -347,9 +506,9 @@ namespace oneshot
         GetClientRect(state.canvas, &client);
         FillRect(hdc, &client, static_cast<HBRUSH>(GetStockObject(DKGRAY_BRUSH)));
 
-        state.imageRect = ComputeImageRect(state.hwnd, state.currentImage);
+        ClampViewportOffsets(state);
+        state.imageRect = ComputeImageRect(state);
         RECT canvasRect = state.imageRect;
-        OffsetRect(&canvasRect, -client.left, -kToolbarHeight);
 
         HDC memoryDc = CreateCompatibleDC(hdc);
         HGDIOBJ previous = SelectObject(memoryDc, state.currentImage.bitmap);
@@ -373,24 +532,16 @@ namespace oneshot
 
         if (state.tool == MarkupEditorWindow::Tool::Polygon && state.polygonInProgress)
         {
-            const POINT current = ClientToImagePoint(state.imageRect, state.currentImage, state.dragCurrent);
-            DrawPolygonPreview(hdc, canvasRect, state.currentImage, state.polygonPoints, current);
+            const POINT current = ClientToImagePoint(state.imageRect, state.currentImage, state.zoom, state.dragCurrent);
+            DrawPolygonPreview(hdc, canvasRect, state.currentImage, state.zoom, state.polygonPoints, current);
         }
 
         if (state.previewActive && state.tool != MarkupEditorWindow::Tool::Pen && state.tool != MarkupEditorWindow::Tool::Polygon)
         {
-            const POINT start = ClientToImagePoint(state.imageRect, state.currentImage, state.dragStart);
-            const POINT end = ClientToImagePoint(state.imageRect, state.currentImage, state.dragCurrent);
-            const auto scaleX = static_cast<double>(canvasRect.right - canvasRect.left) / std::max(1, state.currentImage.width);
-            const auto scaleY = static_cast<double>(canvasRect.bottom - canvasRect.top) / std::max(1, state.currentImage.height);
-            POINT previewStart{
-                canvasRect.left + static_cast<LONG>(std::round(start.x * scaleX)),
-                canvasRect.top + static_cast<LONG>(std::round(start.y * scaleY))
-            };
-            POINT previewEnd{
-                canvasRect.left + static_cast<LONG>(std::round(end.x * scaleX)),
-                canvasRect.top + static_cast<LONG>(std::round(end.y * scaleY))
-            };
+            const POINT start = ClientToImagePoint(state.imageRect, state.currentImage, state.zoom, state.dragStart);
+            const POINT end = ClientToImagePoint(state.imageRect, state.currentImage, state.zoom, state.dragCurrent);
+            POINT previewStart = ImagePointToClientPoint(canvasRect, state.zoom, start);
+            POINT previewEnd = ImagePointToClientPoint(canvasRect, state.zoom, end);
 
             HPEN pen = CreatePen(PS_DOT, 2, state.color);
             HGDIOBJ oldPen = SelectObject(hdc, pen);
@@ -470,7 +621,7 @@ namespace oneshot
             WS_OVERLAPPEDWINDOW | WS_VISIBLE,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-            1100,
+            1380,
             800,
             owner,
             nullptr,
@@ -531,13 +682,17 @@ namespace oneshot
             CreateWindowExW(0, L"Button", L"T+", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 636, 8, 30, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kThicknessUpId)), GetModuleHandleW(nullptr), nullptr);
             CreateWindowExW(0, L"Button", L"F-", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 670, 8, 30, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFontDownId)), GetModuleHandleW(nullptr), nullptr);
             CreateWindowExW(0, L"Button", L"F+", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 704, 8, 30, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFontUpId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Undo", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 738, 8, 48, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kUndoId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Redo", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 790, 8, 48, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kRedoId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Copy", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 842, 8, 48, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCopyId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Done", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 894, 8, 48, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDoneId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Cancel", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 946, 8, 58, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCancelId)), GetModuleHandleW(nullptr), nullptr);
-            state->textInput = CreateWindowExW(WS_EX_CLIENTEDGE, L"Edit", L"Text", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 1008, 8, 84, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTextInputId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Fit", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 738, 8, 40, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFitId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Undo", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 782, 8, 48, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kUndoId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Redo", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 834, 8, 48, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kRedoId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Copy", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 886, 8, 48, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCopyId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Done", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 938, 8, 48, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDoneId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Cancel", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 990, 8, 58, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCancelId)), GetModuleHandleW(nullptr), nullptr);
+            state->fontCombo = CreateWindowExW(0, L"ComboBox", nullptr, WS_CHILD | WS_VISIBLE | WS_VSCROLL | CBS_DROPDOWNLIST, 1052, 8, 150, 320, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFontComboId)), GetModuleHandleW(nullptr), nullptr);
+            state->textInput = CreateWindowExW(WS_EX_CLIENTEDGE, L"Edit", L"Text", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 1208, 8, 120, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTextInputId)), GetModuleHandleW(nullptr), nullptr);
             state->canvas = CreateWindowExW(0, L"OneShotNative.MarkupCanvas", L"", WS_CHILD | WS_VISIBLE, 0, kToolbarHeight, 100, 100, hwnd, nullptr, GetModuleHandleW(nullptr), state);
+            PopulateFontCombo(state->fontCombo, state->fontFace);
+            FitImageToViewport(*state);
             UpdateToolButtons(*state);
             CheckDlgButton(hwnd, kFillToggleId, BST_CHECKED);
             return 0;
@@ -545,6 +700,8 @@ namespace oneshot
             if (state->canvas)
             {
                 MoveWindow(state->canvas, 0, kToolbarHeight, LOWORD(lParam), HIWORD(lParam) - kToolbarHeight, TRUE);
+                UpdateZoomBounds(*state, true);
+                InvalidateRect(state->canvas, nullptr, TRUE);
             }
             return 0;
         case WM_COMMAND:
@@ -595,18 +752,28 @@ namespace oneshot
                 return 0;
             case kFillToggleId:
                 state->fillShapes = IsDlgButtonChecked(hwnd, kFillToggleId) == BST_CHECKED;
+                InvalidateRect(state->canvas, nullptr, TRUE);
                 return 0;
             case kThicknessDownId:
                 state->thickness = std::max(1, state->thickness - 1);
+                InvalidateRect(state->canvas, nullptr, TRUE);
                 return 0;
             case kThicknessUpId:
                 state->thickness = std::min(16, state->thickness + 1);
+                InvalidateRect(state->canvas, nullptr, TRUE);
                 return 0;
             case kFontDownId:
                 state->fontSize = std::max(8, state->fontSize - 2);
+                InvalidateRect(state->canvas, nullptr, TRUE);
                 return 0;
             case kFontUpId:
                 state->fontSize = std::min(96, state->fontSize + 2);
+                InvalidateRect(state->canvas, nullptr, TRUE);
+                return 0;
+            case kFitId:
+                state->userAdjustedViewport = false;
+                FitImageToViewport(*state);
+                InvalidateRect(state->canvas, nullptr, TRUE);
                 return 0;
             case kDoneId:
                 state->resultImage = std::move(state->currentImage);
@@ -619,6 +786,17 @@ namespace oneshot
                 return 0;
             default:
                 break;
+            }
+            if (LOWORD(wParam) == kFontComboId && HIWORD(wParam) == CBN_SELCHANGE)
+            {
+                const LRESULT selection = SendMessageW(state->fontCombo, CB_GETCURSEL, 0, 0);
+                if (selection != CB_ERR)
+                {
+                    wchar_t fontName[LF_FACESIZE]{};
+                    SendMessageW(state->fontCombo, CB_GETLBTEXT, selection, reinterpret_cast<LPARAM>(fontName));
+                    state->fontFace = fontName;
+                }
+                return 0;
             }
             break;
         case WM_CLOSE:
@@ -636,6 +814,11 @@ namespace oneshot
                 if (wParam == 'Y')
                 {
                     SendMessageW(hwnd, WM_COMMAND, kRedoId, 0);
+                    return 0;
+                }
+                if (wParam == '0')
+                {
+                    SendMessageW(hwnd, WM_COMMAND, kFitId, 0);
                     return 0;
                 }
             }
@@ -670,7 +853,8 @@ namespace oneshot
         {
         case WM_LBUTTONDOWN:
         {
-            POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) + kToolbarHeight };
+            SetFocus(hwnd);
+            POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
             if (!PtInRect(&state->imageRect, point))
             {
                 return 0;
@@ -687,7 +871,7 @@ namespace oneshot
             }
             else if (state->tool == Tool::Polygon)
             {
-                const POINT mapped = ClientToImagePoint(state->imageRect, state->currentImage, point);
+                const POINT mapped = ClientToImagePoint(state->imageRect, state->currentImage, state->zoom, point);
                 if (!state->polygonInProgress)
                 {
                     PushUndoState(*state);
@@ -714,9 +898,9 @@ namespace oneshot
                     HGDIOBJ previous = SelectObject(memoryDc, state->currentImage.bitmap);
                     SetBkMode(memoryDc, TRANSPARENT);
                     SetTextColor(memoryDc, state->color);
-                    HFONT font = CreateFontW(state->fontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+                    HFONT font = CreateFontW(state->fontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE, state->fontFace.c_str());
                     HGDIOBJ oldFont = SelectObject(memoryDc, font);
-                    POINT mapped = ClientToImagePoint(state->imageRect, state->currentImage, point);
+                    POINT mapped = ClientToImagePoint(state->imageRect, state->currentImage, state->zoom, point);
                     TextOutW(memoryDc, mapped.x, mapped.y, text, static_cast<int>(wcslen(text)));
                     SelectObject(memoryDc, oldFont);
                     DeleteObject(font);
@@ -735,9 +919,28 @@ namespace oneshot
             return 0;
         }
         case WM_MOUSEMOVE:
+            if (state->middlePanning)
+            {
+                if ((wParam & MK_MBUTTON) == 0)
+                {
+                    state->middlePanning = false;
+                    ReleaseCapture();
+                    SetCursor(LoadCursorW(nullptr, IDC_CROSS));
+                    return 0;
+                }
+
+                const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+                state->viewportOffsetX = state->middlePanOffsetX - (point.x - state->middlePanStart.x);
+                state->viewportOffsetY = state->middlePanOffsetY - (point.y - state->middlePanStart.y);
+                ClampViewportOffsets(*state);
+                state->imageRect = ComputeImageRect(*state);
+                InvalidateRect(hwnd, nullptr, TRUE);
+                return 0;
+            }
+
             if (state->tool == Tool::Polygon && state->polygonInProgress)
             {
-                POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) + kToolbarHeight };
+                POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
                 state->dragCurrent = ClampPointToImage(state->imageRect, point);
                 InvalidateRect(hwnd, nullptr, TRUE);
                 return 0;
@@ -745,7 +948,7 @@ namespace oneshot
 
             if (state->isDrawing && (wParam & MK_LBUTTON))
             {
-                POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) + kToolbarHeight };
+                POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
                 point = ClampPointToImage(state->imageRect, point);
                 if (state->tool == Tool::Pen)
                 {
@@ -754,8 +957,8 @@ namespace oneshot
                     HGDIOBJ previous = SelectObject(memoryDc, state->currentImage.bitmap);
                     HPEN pen = CreatePen(PS_SOLID, state->thickness, state->color);
                     HGDIOBJ oldPen = SelectObject(memoryDc, pen);
-                    POINT start = ClientToImagePoint(state->imageRect, state->currentImage, state->dragCurrent);
-                    POINT end = ClientToImagePoint(state->imageRect, state->currentImage, point);
+                    POINT start = ClientToImagePoint(state->imageRect, state->currentImage, state->zoom, state->dragCurrent);
+                    POINT end = ClientToImagePoint(state->imageRect, state->currentImage, state->zoom, point);
                     MoveToEx(memoryDc, start.x, start.y, nullptr);
                     LineTo(memoryDc, end.x, end.y);
                     SelectObject(memoryDc, oldPen);
@@ -773,16 +976,44 @@ namespace oneshot
                 }
             }
             return 0;
+        case WM_MBUTTONDOWN:
+        {
+            SetFocus(hwnd);
+            RECT client = GetCanvasClientRect(hwnd);
+            const double contentWidth = state->currentImage.width * state->zoom;
+            const double contentHeight = state->currentImage.height * state->zoom;
+            if (contentWidth <= (client.right - client.left) && contentHeight <= (client.bottom - client.top))
+            {
+                return 0;
+            }
+
+            state->middlePanning = true;
+            state->userAdjustedViewport = true;
+            state->middlePanStart = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            state->middlePanOffsetX = state->viewportOffsetX;
+            state->middlePanOffsetY = state->viewportOffsetY;
+            SetCapture(hwnd);
+            SetCursor(LoadCursorW(nullptr, IDC_SIZEALL));
+            return 0;
+        }
+        case WM_MBUTTONUP:
+            if (state->middlePanning)
+            {
+                state->middlePanning = false;
+                ReleaseCapture();
+                SetCursor(LoadCursorW(nullptr, IDC_CROSS));
+            }
+            return 0;
         case WM_LBUTTONUP:
             if (state->isDrawing)
             {
-                POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) + kToolbarHeight };
+                POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
                 point = ClampPointToImage(state->imageRect, point);
                 if (state->tool != Tool::Pen && state->tool != Tool::Text)
                 {
                     PushUndoState(*state);
-                    POINT start = ClientToImagePoint(state->imageRect, state->currentImage, state->dragStart);
-                    POINT end = ClientToImagePoint(state->imageRect, state->currentImage, point);
+                    POINT start = ClientToImagePoint(state->imageRect, state->currentImage, state->zoom, state->dragStart);
+                    POINT end = ClientToImagePoint(state->imageRect, state->currentImage, state->zoom, point);
                     const bool keepAspectRatio = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
                     if (state->tool == Tool::Line || state->tool == Tool::Arrow)
                     {
@@ -803,6 +1034,40 @@ namespace oneshot
                 ReleaseCapture();
             }
             return 0;
+        case WM_MOUSEWHEEL:
+        {
+            if ((GET_KEYSTATE_WPARAM(wParam) & MK_CONTROL) == 0)
+            {
+                break;
+            }
+
+            POINT point{};
+            ScreenToCanvasClient(hwnd, lParam, point);
+            state->userAdjustedViewport = true;
+
+            const POINT imagePoint = ClientToImagePoint(state->imageRect, state->currentImage, state->zoom, point);
+            const double step = GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? kZoomStep : (1.0 / kZoomStep);
+            const double targetZoom = std::clamp(state->zoom * step, state->minimumZoom, kMaxZoom);
+            if (std::abs(targetZoom - state->zoom) < 0.0001)
+            {
+                return 0;
+            }
+
+            state->zoom = targetZoom;
+            RECT client = GetCanvasClientRect(hwnd);
+            const double clientWidth = std::max(1.0, static_cast<double>(client.right - client.left));
+            const double clientHeight = std::max(1.0, static_cast<double>(client.bottom - client.top));
+            const double contentWidth = state->currentImage.width * state->zoom;
+            const double contentHeight = state->currentImage.height * state->zoom;
+            const double hostOriginX = std::max(0.0, (clientWidth - contentWidth) / 2.0);
+            const double hostOriginY = std::max(0.0, (clientHeight - contentHeight) / 2.0);
+            state->viewportOffsetX = (imagePoint.x * state->zoom) + hostOriginX + client.left - point.x;
+            state->viewportOffsetY = (imagePoint.y * state->zoom) + hostOriginY + client.top - point.y;
+            ClampViewportOffsets(*state);
+            state->imageRect = ComputeImageRect(*state);
+            InvalidateRect(hwnd, nullptr, TRUE);
+            return 0;
+        }
         case WM_RBUTTONUP:
             if (state->tool == Tool::Polygon && state->polygonInProgress)
             {
