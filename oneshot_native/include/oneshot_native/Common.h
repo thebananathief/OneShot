@@ -20,10 +20,10 @@
 
 namespace oneshot
 {
-    inline constexpr wchar_t kAppName[] = L"OneShot Native";
+    inline constexpr wchar_t kAppName[] = L"OneShot";
     inline constexpr wchar_t kWindowClassName[] = L"OneShotNative.AppHost";
     inline constexpr wchar_t kPipeName[] = L"\\\\.\\pipe\\OneShot.Command.v1";
-    inline constexpr wchar_t kMutexName[] = L"Local\\OneShot.Native.Instance.v1";
+    inline constexpr wchar_t kMutexName[] = L"Local\\OneShot.Instance.v1";
 
     inline constexpr UINT kTrayIconId = 1001;
     inline constexpr UINT kWindowMessageTrayIcon = WM_APP + 1;
