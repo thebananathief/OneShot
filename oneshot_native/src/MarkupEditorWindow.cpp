@@ -36,6 +36,9 @@ namespace
     constexpr int kFitId = 2024;
     constexpr int kFontComboId = 2025;
     constexpr int kAngleSnapIncrementDegrees = 15;
+    constexpr int kPromptEditId = 3001;
+    constexpr int kPromptOkId = 3002;
+    constexpr int kPromptCancelId = 3003;
 
     RECT MakeRect(int left, int top, int right, int bottom)
     {
@@ -46,6 +49,15 @@ namespace
         rect.bottom = bottom;
         return rect;
     }
+
+    struct TextPromptState
+    {
+        HWND hwnd{nullptr};
+        HWND edit{nullptr};
+        bool finished{false};
+        bool accepted{false};
+        std::wstring value;
+    };
 }
 
 namespace oneshot
@@ -365,6 +377,126 @@ namespace oneshot
         {
             SendMessageW(combo, CB_SETCURSEL, 0, 0);
         }
+    }
+
+    static LRESULT CALLBACK TextPromptProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
+    {
+        auto* state = reinterpret_cast<TextPromptState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+
+        if (message == WM_NCCREATE)
+        {
+            const auto* createStruct = reinterpret_cast<LPCREATESTRUCTW>(lParam);
+            state = static_cast<TextPromptState*>(createStruct->lpCreateParams);
+            state->hwnd = hwnd;
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
+            return TRUE;
+        }
+
+        if (!state)
+        {
+            return DefWindowProcW(hwnd, message, wParam, lParam);
+        }
+
+        switch (message)
+        {
+        case WM_CREATE:
+            state->edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"Edit", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | WS_TABSTOP, 12, 14, 300, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kPromptEditId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"OK", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON | WS_TABSTOP, 154, 50, 76, 26, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kPromptOkId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Cancel", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | WS_TABSTOP, 236, 50, 76, 26, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kPromptCancelId)), GetModuleHandleW(nullptr), nullptr);
+            SendMessageW(state->edit, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
+            SetFocus(state->edit);
+            return 0;
+        case WM_COMMAND:
+            switch (LOWORD(wParam))
+            {
+            case kPromptOkId:
+            {
+                wchar_t buffer[512]{};
+                GetWindowTextW(state->edit, buffer, static_cast<int>(std::size(buffer)));
+                state->value = buffer;
+                state->accepted = true;
+                state->finished = true;
+                DestroyWindow(hwnd);
+                return 0;
+            }
+            case kPromptCancelId:
+                state->finished = true;
+                DestroyWindow(hwnd);
+                return 0;
+            default:
+                break;
+            }
+            break;
+        case WM_CLOSE:
+            state->finished = true;
+            DestroyWindow(hwnd);
+            return 0;
+        default:
+            break;
+        }
+
+        return DefWindowProcW(hwnd, message, wParam, lParam);
+    }
+
+    static std::optional<std::wstring> PromptForText(HWND owner)
+    {
+        WNDCLASSW windowClass{};
+        windowClass.lpfnWndProc = TextPromptProc;
+        windowClass.hInstance = GetModuleHandleW(nullptr);
+        windowClass.lpszClassName = L"OneShotNative.TextPrompt";
+        windowClass.hCursor = LoadCursorW(nullptr, IDC_IBEAM);
+        windowClass.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+        RegisterClassW(&windowClass);
+
+        RECT ownerRect{};
+        if (!GetWindowRect(owner, &ownerRect))
+        {
+            ownerRect = MakeRect(CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT + 324, CW_USEDEFAULT + 100);
+        }
+
+        TextPromptState state{};
+        HWND window = CreateWindowExW(
+            WS_EX_DLGMODALFRAME,
+            windowClass.lpszClassName,
+            L"Add Text",
+            WS_CAPTION | WS_POPUPWINDOW | WS_VISIBLE,
+            ownerRect.left + std::max(0L, ((ownerRect.right - ownerRect.left) - 324L) / 2L),
+            ownerRect.top + std::max(0L, ((ownerRect.bottom - ownerRect.top) - 100L) / 2L),
+            324,
+            100,
+            owner,
+            nullptr,
+            GetModuleHandleW(nullptr),
+            &state);
+
+        if (!window)
+        {
+            return std::nullopt;
+        }
+
+        EnableWindow(owner, FALSE);
+        ShowWindow(window, SW_SHOW);
+        UpdateWindow(window);
+
+        MSG message{};
+        while (!state.finished && GetMessageW(&message, nullptr, 0, 0))
+        {
+            if (!IsDialogMessageW(window, &message))
+            {
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+        }
+
+        EnableWindow(owner, TRUE);
+        SetActiveWindow(owner);
+
+        if (!state.accepted || state.value.empty())
+        {
+            return std::nullopt;
+        }
+
+        return state.value;
     }
 
     void MarkupEditorWindow::ClearBitmapStack(std::vector<HBITMAP>& stack)
@@ -694,7 +826,6 @@ namespace oneshot
             CreateWindowExW(0, L"Button", L"Done", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 1064, 8, 48, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDoneId)), GetModuleHandleW(nullptr), nullptr);
             CreateWindowExW(0, L"Button", L"Cancel", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 1116, 8, 58, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCancelId)), GetModuleHandleW(nullptr), nullptr);
             state->fontCombo = CreateWindowExW(0, L"ComboBox", nullptr, WS_CHILD | WS_VISIBLE | WS_VSCROLL | CBS_DROPDOWNLIST, 1178, 8, 150, 320, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFontComboId)), GetModuleHandleW(nullptr), nullptr);
-            state->textInput = CreateWindowExW(WS_EX_CLIENTEDGE, L"Edit", L"Text", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 1334, 8, 120, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTextInputId)), GetModuleHandleW(nullptr), nullptr);
             state->canvas = CreateWindowExW(0, L"OneShotNative.MarkupCanvas", L"", WS_CHILD | WS_VISIBLE, 0, kToolbarHeight, 100, 100, hwnd, nullptr, GetModuleHandleW(nullptr), state);
             PopulateFontCombo(state->fontCombo, state->fontFace);
             FitImageToViewport(*state);
@@ -901,9 +1032,8 @@ namespace oneshot
             }
             else if (state->tool == Tool::Text)
             {
-                wchar_t text[256]{};
-                GetWindowTextW(state->textInput, text, static_cast<int>(std::size(text)));
-                if (text[0] != L'\0')
+                const auto text = PromptForText(state->hwnd);
+                if (text.has_value())
                 {
                     PushUndoState(*state);
                     HDC screenDc = GetDC(nullptr);
@@ -914,7 +1044,7 @@ namespace oneshot
                     HFONT font = CreateFontW(state->fontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE, state->fontFace.c_str());
                     HGDIOBJ oldFont = SelectObject(memoryDc, font);
                     POINT mapped = ClientToImagePoint(state->imageRect, state->currentImage, state->zoom, point);
-                    TextOutW(memoryDc, mapped.x, mapped.y, text, static_cast<int>(wcslen(text)));
+                    TextOutW(memoryDc, mapped.x, mapped.y, text->c_str(), static_cast<int>(text->size()));
                     SelectObject(memoryDc, oldFont);
                     DeleteObject(font);
                     SelectObject(memoryDc, previous);
