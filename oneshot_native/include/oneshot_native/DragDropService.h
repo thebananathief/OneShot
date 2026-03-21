@@ -7,6 +7,6 @@ namespace oneshot
     class DragDropService
     {
     public:
-        [[nodiscard]] bool StartFileDrag(HWND sourceWindow, const std::filesystem::path& filePath) const;
+        [[nodiscard]] bool StartFileDrag(HWND sourceWindow, const std::filesystem::path& filePath, std::wstring& error) const;
     };
 }

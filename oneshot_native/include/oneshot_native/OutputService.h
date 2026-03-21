@@ -3,6 +3,8 @@
 #include "oneshot_native/CaptureTypes.h"
 #include "oneshot_native/PathService.h"
 
+#include <objidl.h>
+
 namespace oneshot
 {
     class OutputService
@@ -16,6 +18,8 @@ namespace oneshot
 
     private:
         [[nodiscard]] bool EnsureParentDirectory(const std::filesystem::path& path, std::wstring& error) const;
+        [[nodiscard]] bool EncodeBitmapToPngStream(HBITMAP bitmap, IStream* stream, std::wstring& error) const;
+        [[nodiscard]] bool EncodeBitmapToPngBytes(HBITMAP bitmap, std::vector<BYTE>& bytes, std::wstring& error) const;
         [[nodiscard]] bool EncodeBitmapToPng(HBITMAP bitmap, const std::filesystem::path& destination, std::wstring& error) const;
 
         AppPaths _paths;

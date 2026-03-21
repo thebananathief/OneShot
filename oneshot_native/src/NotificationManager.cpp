@@ -673,7 +673,12 @@ namespace oneshot
             return;
         }
 
-        (void)_dragDrop.StartFileDrag(notification->hwnd, notification->dragPath);
+        std::wstring error;
+        const bool started = _dragDrop.StartFileDrag(notification->hwnd, notification->dragPath, error);
+        if (!started && !error.empty())
+        {
+            MessageBoxW(notification->hwnd, error.c_str(), kAppName, MB_OK | MB_ICONWARNING);
+        }
     }
 
     void NotificationManager::OpenMarkup(NotificationWindow* notification)
