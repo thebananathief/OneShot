@@ -73,8 +73,8 @@ namespace oneshot
         , _tempFileManager(_paths)
         , _startupService(_paths)
         , _diagnostics(_paths)
-        , _notificationManager(_paths)
         , _outputService(_paths)
+        , _notificationManager(_paths, _outputService)
         , _server([this](const CommandEnvelope& envelope) { return HandleCommand(envelope); })
     {
     }
@@ -212,7 +212,7 @@ namespace oneshot
             return;
         }
 
-        const auto capture = _captureService.Crop(*virtualCapture, *selection);
+        auto capture = _captureService.Crop(*virtualCapture, *selection);
         if (!capture.has_value())
         {
             _tray.ShowBalloon(L"OneShot", L"Failed to crop the selected region.");
@@ -244,7 +244,7 @@ namespace oneshot
             return;
         }
 
-        _notificationManager.Show(_hwnd, *capture, savedPath, dragPath);
+        _notificationManager.Show(_hwnd, std::move(*capture), savedPath, dragPath);
     }
 
     CommandResponse AppHost::HandleCommand(const CommandEnvelope& envelope)

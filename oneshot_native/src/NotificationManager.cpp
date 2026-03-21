@@ -64,7 +64,7 @@ namespace oneshot
             switch (LOWORD(wParam))
             {
             case kMarkupButtonId:
-                MessageBoxW(hwnd, L"Native markup editor is not implemented yet.", kAppName, MB_OK | MB_ICONINFORMATION);
+                notification->manager->OpenMarkup(notification);
                 return 0;
             case kDismissButtonId:
                 notification->manager->CloseNotification(notification);
@@ -123,8 +123,10 @@ namespace oneshot
         return DefWindowProcW(hwnd, message, wParam, lParam);
     }
 
-    NotificationManager::NotificationManager(AppPaths paths)
+    NotificationManager::NotificationManager(AppPaths paths, OutputService& outputService)
         : _paths(std::move(paths))
+        , _markupEditor(outputService)
+        , _outputService(outputService)
     {
         WNDCLASSW windowClass{};
         windowClass.lpfnWndProc = NotificationWindowProc;
@@ -140,10 +142,11 @@ namespace oneshot
         CloseAll();
     }
 
-    void NotificationManager::Show(HWND owner, const CapturedImage& image, const std::filesystem::path& savedPath, const std::filesystem::path& dragPath)
+    void NotificationManager::Show(HWND owner, CapturedImage image, const std::filesystem::path& savedPath, const std::filesystem::path& dragPath)
     {
         auto notification = std::make_unique<NotificationWindow>();
         notification->manager = this;
+        notification->image = std::move(image);
         notification->savedPath = savedPath;
         notification->dragPath = dragPath;
 
@@ -172,7 +175,7 @@ namespace oneshot
         notification->markupButton = CreateWindowExW(0, WC_BUTTONW, L"Markup", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 120, 72, 88, 28, notification->hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kMarkupButtonId)), GetModuleHandleW(nullptr), nullptr);
         notification->dismissButton = CreateWindowExW(0, WC_BUTTONW, L"Dismiss", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 216, 72, 88, 28, notification->hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDismissButtonId)), GetModuleHandleW(nullptr), nullptr);
 
-        notification->thumbnailBitmap = static_cast<HBITMAP>(CopyImage(image.bitmap, IMAGE_BITMAP, 96, 72, LR_CREATEDIBSECTION));
+        notification->thumbnailBitmap = static_cast<HBITMAP>(CopyImage(notification->image.bitmap, IMAGE_BITMAP, 96, 72, LR_CREATEDIBSECTION));
         SendMessageW(notification->thumbnail, STM_SETIMAGE, IMAGE_BITMAP, reinterpret_cast<LPARAM>(notification->thumbnailBitmap));
 
         ShowWindow(notification->hwnd, SW_SHOW);
@@ -196,6 +199,45 @@ namespace oneshot
         }
 
         (void)_dragDrop.StartFileDrag(notification->hwnd, notification->dragPath);
+    }
+
+    void NotificationManager::OpenMarkup(NotificationWindow* notification)
+    {
+        if (!notification)
+        {
+            return;
+        }
+
+        auto updatedImage = _markupEditor.Edit(notification->hwnd, notification->image);
+        if (!updatedImage.has_value())
+        {
+            return;
+        }
+
+        std::wstring error;
+        if (!_outputService.SavePng(*updatedImage, notification->savedPath, error))
+        {
+            MessageBoxW(notification->hwnd, error.c_str(), kAppName, MB_OK | MB_ICONERROR);
+            return;
+        }
+
+        std::wstring dragError;
+        if (!_outputService.SavePng(*updatedImage, notification->dragPath, dragError))
+        {
+            MessageBoxW(notification->hwnd, dragError.c_str(), kAppName, MB_OK | MB_ICONERROR);
+            return;
+        }
+
+        notification->image = std::move(*updatedImage);
+        if (notification->thumbnailBitmap)
+        {
+            DeleteObject(notification->thumbnailBitmap);
+            notification->thumbnailBitmap = nullptr;
+        }
+
+        notification->thumbnailBitmap = static_cast<HBITMAP>(CopyImage(notification->image.bitmap, IMAGE_BITMAP, 96, 72, LR_CREATEDIBSECTION));
+        SendMessageW(notification->thumbnail, STM_SETIMAGE, IMAGE_BITMAP, reinterpret_cast<LPARAM>(notification->thumbnailBitmap));
+        InvalidateRect(notification->hwnd, nullptr, TRUE);
     }
 
     void NotificationManager::RepositionAll()

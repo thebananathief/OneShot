@@ -49,10 +49,10 @@ namespace oneshot
         TempFileManager _tempFileManager;
         StartupService _startupService;
         DiagnosticsService _diagnostics;
+        OutputService _outputService;
         CaptureService _captureService;
         OverlayManager _overlayManager;
         NotificationManager _notificationManager;
-        OutputService _outputService;
         TrayController _tray;
         CommandServer _server;
         CommandClient _client;
