@@ -1,0 +1,43 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Name="OneShot Native"
+    Manufacturer="OneShot"
+    Version="$(var.ProductVersion)"
+    UpgradeCode="0CC2A2BC-2A2B-438A-A4B0-56C48B1E6A10"
+    Scope="perUser"
+    InstallerVersion="500">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of OneShot Native is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="INSTALLFOLDER" Name="OneShotNative" />
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ProgramMenuDir" Name="OneShot Native" />
+    </StandardDirectory>
+
+    <Feature Id="MainFeature" Title="OneShot Native" Level="1">
+      <ComponentGroupRef Id="ProductComponents" />
+    </Feature>
+  </Package>
+
+  <Fragment>
+    <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
+      <Component Id="cmpMainExe" Guid="*">
+        <File Id="filOneShotNativeExe" Source="$(var.PublishDir)\oneshot.exe" KeyPath="yes" />
+        <Shortcut
+          Id="scutStartMenu"
+          Directory="ProgramMenuDir"
+          Name="OneShot Native"
+          Target="[INSTALLFOLDER]oneshot.exe"
+          WorkingDirectory="INSTALLFOLDER" />
+      </Component>
+
+      <Component Id="cmpMarkers" Guid="*" Directory="ProgramMenuDir">
+        <RegistryValue Root="HKCU" Key="Software\OneShotNative" Name="Installed" Type="integer" Value="1" KeyPath="yes" />
+        <RemoveFolder Id="rmProgramMenuDir" Directory="ProgramMenuDir" On="uninstall" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+</Wix>
