@@ -15,7 +15,7 @@ namespace oneshot
     {
     }
 
-    std::wstring DiagnosticsService::BuildDiagnosticsText(bool startupEnabled) const
+    std::wstring DiagnosticsService::BuildDiagnosticsText(bool startupEnabled, bool snapshotActive) const
     {
         std::wstringstream builder;
         builder << L"{\n"
@@ -27,7 +27,9 @@ namespace oneshot
                 << L"  temp_dir: \"" << ToWideString(_paths.tempDirectory) << L"\",\n"
                 << L"  log_dir: \"" << ToWideString(_paths.logDirectory) << L"\",\n"
                 << L"  monitor_count: " << GetSystemMetrics(SM_CMONITORS) << L",\n"
-                << L"  running: true\n"
+                << L"  running: true,\n"
+                << L"  snapshot_active: " << BoolText(snapshotActive) << L",\n"
+                << L"  state: \"" << (snapshotActive ? L"busy" : L"idle") << L"\"\n"
                 << L"}\n";
         return builder.str();
     }

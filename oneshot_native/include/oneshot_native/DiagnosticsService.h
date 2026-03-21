@@ -9,7 +9,7 @@ namespace oneshot
     public:
         explicit DiagnosticsService(AppPaths paths);
 
-        [[nodiscard]] std::wstring BuildDiagnosticsText(bool startupEnabled) const;
+        [[nodiscard]] std::wstring BuildDiagnosticsText(bool startupEnabled, bool snapshotActive) const;
 
     private:
         AppPaths _paths;

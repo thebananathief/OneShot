@@ -276,8 +276,15 @@ namespace oneshot
 
         if (envelope.command == kCommandSnapshot)
         {
-            PostMessageW(_hwnd, WM_COMMAND, kTrayMenuSnapshot, 0);
-            response.message = L"snapshot queued";
+            if (_snapshotActive.load())
+            {
+                response.message = L"snapshot busy";
+            }
+            else
+            {
+                PostMessageW(_hwnd, WM_COMMAND, kTrayMenuSnapshot, 0);
+                response.message = L"snapshot queued";
+            }
         }
         else if (envelope.command == kCommandInstallStartup)
         {
@@ -289,7 +296,7 @@ namespace oneshot
         }
         else if (envelope.command == kCommandDiagnostics)
         {
-            response.message = _diagnostics.BuildDiagnosticsText(_startupService.IsEnabled());
+            response.message = _diagnostics.BuildDiagnosticsText(_startupService.IsEnabled(), _snapshotActive.load());
         }
         else if (envelope.command == kCommandPing)
         {
@@ -311,7 +318,7 @@ namespace oneshot
 
     void AppHost::ShowDiagnosticsAndExit() const
     {
-        WriteConsoleText(_diagnostics.BuildDiagnosticsText(_startupService.IsEnabled()));
+        WriteConsoleText(_diagnostics.BuildDiagnosticsText(_startupService.IsEnabled(), _snapshotActive.load()));
     }
 
     void AppHost::InstallStartupAndExit() const
@@ -362,7 +369,7 @@ namespace oneshot
                 self->HandleSnapshotRequested();
                 return 0;
             case kTrayMenuDiagnostics:
-                MessageBoxW(hwnd, self->_diagnostics.BuildDiagnosticsText(self->_startupService.IsEnabled()).c_str(), kAppName, MB_OK | MB_ICONINFORMATION);
+                MessageBoxW(hwnd, self->_diagnostics.BuildDiagnosticsText(self->_startupService.IsEnabled(), self->_snapshotActive.load()).c_str(), kAppName, MB_OK | MB_ICONINFORMATION);
                 return 0;
             case kTrayMenuExit:
                 DestroyWindow(hwnd);
