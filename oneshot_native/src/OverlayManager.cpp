@@ -4,6 +4,12 @@
 
 namespace
 {
+    constexpr UINT kWmMouseMove = 0x0200;
+    constexpr UINT kWmLButtonUp = 0x0202;
+    constexpr UINT kWmRButtonDown = 0x0204;
+    constexpr UINT kWmKeyDown = 0x0100;
+    constexpr DWORD kVkEscape = 0x1B;
+
     struct OverlaySession;
     LRESULT CALLBACK OverlayWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
 
@@ -21,9 +27,12 @@ namespace
         bool completed{false};
         bool cancelled{true};
         POINT anchor{};
-        HWND captureWindow{nullptr};
         std::vector<HWND> windows;
+        HHOOK keyboardHook{nullptr};
+        HHOOK mouseHook{nullptr};
     };
+
+    OverlaySession* g_activeSession = nullptr;
 
     RECT NormalizeRect(POINT a, POINT b)
     {
@@ -81,6 +90,35 @@ namespace
         }
     }
 
+    void RemoveHooks(OverlaySession& session)
+    {
+        if (session.keyboardHook)
+        {
+            UnhookWindowsHookEx(session.keyboardHook);
+            session.keyboardHook = nullptr;
+        }
+
+        if (session.mouseHook)
+        {
+            UnhookWindowsHookEx(session.mouseHook);
+            session.mouseHook = nullptr;
+        }
+
+        if (g_activeSession == &session)
+        {
+            g_activeSession = nullptr;
+        }
+    }
+
+    void FinishSession(OverlaySession& session, bool cancelled)
+    {
+        session.cancelled = cancelled;
+        session.completed = true;
+        session.selecting = false;
+        RemoveHooks(session);
+        CloseAll(session);
+    }
+
     struct MonitorEnumData
     {
         std::vector<RECT>* monitors;
@@ -115,6 +153,59 @@ namespace
         (void)registered;
     }
 
+    LRESULT CALLBACK KeyboardHookProc(int code, WPARAM wParam, LPARAM lParam)
+    {
+        if (code >= 0 && g_activeSession && wParam == kWmKeyDown)
+        {
+            const auto* keyboard = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
+            if (keyboard && keyboard->vkCode == kVkEscape)
+            {
+                FinishSession(*g_activeSession, true);
+                return 1;
+            }
+        }
+
+        return CallNextHookEx(nullptr, code, wParam, lParam);
+    }
+
+    LRESULT CALLBACK MouseHookProc(int code, WPARAM wParam, LPARAM lParam)
+    {
+        if (code >= 0 && g_activeSession)
+        {
+            const auto* mouse = reinterpret_cast<MSLLHOOKSTRUCT*>(lParam);
+            if (mouse)
+            {
+                if (wParam == kWmMouseMove && g_activeSession->selecting)
+                {
+                    g_activeSession->selection = NormalizeRect(g_activeSession->anchor, mouse->pt);
+                    InvalidateAll(*g_activeSession);
+                }
+                else if (wParam == kWmLButtonUp && g_activeSession->selecting)
+                {
+                    g_activeSession->selection = NormalizeRect(g_activeSession->anchor, mouse->pt);
+                    const bool cancelled = (g_activeSession->selection.right - g_activeSession->selection.left) < 2 ||
+                        (g_activeSession->selection.bottom - g_activeSession->selection.top) < 2;
+                    FinishSession(*g_activeSession, cancelled);
+                    return 1;
+                }
+                else if (wParam == kWmRButtonDown)
+                {
+                    FinishSession(*g_activeSession, true);
+                    return 1;
+                }
+            }
+        }
+
+        return CallNextHookEx(nullptr, code, wParam, lParam);
+    }
+
+    void InstallHooks(OverlaySession& session)
+    {
+        g_activeSession = &session;
+        session.keyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, KeyboardHookProc, GetModuleHandleW(nullptr), 0);
+        session.mouseHook = SetWindowsHookExW(WH_MOUSE_LL, MouseHookProc, GetModuleHandleW(nullptr), 0);
+    }
+
     LRESULT CALLBACK OverlayWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
     {
         auto* state = reinterpret_cast<OverlayWindowState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -144,47 +235,21 @@ namespace
         case WM_KEYDOWN:
             if (wParam == VK_ESCAPE)
             {
-                session.cancelled = true;
-                session.completed = true;
-                CloseAll(session);
+                FinishSession(session, true);
                 return 0;
             }
             break;
         case WM_RBUTTONUP:
-            session.cancelled = true;
-            session.completed = true;
-            CloseAll(session);
+            FinishSession(session, true);
             return 0;
         case WM_LBUTTONDOWN:
             SetForegroundWindow(hwnd);
-            SetCapture(hwnd);
-            session.captureWindow = hwnd;
             session.selecting = true;
             session.cancelled = false;
             session.anchor = ClientToScreenPoint(hwnd, lParam);
             session.selection = NormalizeRect(session.anchor, session.anchor);
+            InstallHooks(session);
             InvalidateAll(session);
-            return 0;
-        case WM_MOUSEMOVE:
-            if (session.selecting && session.captureWindow == hwnd)
-            {
-                const POINT current = ClientToScreenPoint(hwnd, lParam);
-                session.selection = NormalizeRect(session.anchor, current);
-                InvalidateAll(session);
-            }
-            return 0;
-        case WM_LBUTTONUP:
-            if (session.selecting && session.captureWindow == hwnd)
-            {
-                ReleaseCapture();
-                session.selecting = false;
-                session.captureWindow = nullptr;
-                const POINT current = ClientToScreenPoint(hwnd, lParam);
-                session.selection = NormalizeRect(session.anchor, current);
-                session.cancelled = (session.selection.right - session.selection.left) < 2 || (session.selection.bottom - session.selection.top) < 2;
-                session.completed = true;
-                CloseAll(session);
-            }
             return 0;
         case WM_PAINT:
         {
@@ -368,6 +433,7 @@ namespace oneshot
 
             if (!overlay)
             {
+                RemoveHooks(session);
                 CloseAll(session);
                 return std::nullopt;
             }
@@ -396,9 +462,11 @@ namespace oneshot
 
         if (session.cancelled)
         {
+            RemoveHooks(session);
             return std::nullopt;
         }
 
+        RemoveHooks(session);
         return session.selection;
     }
 }
