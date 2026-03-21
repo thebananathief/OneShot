@@ -59,5 +59,6 @@ namespace oneshot
         HANDLE _instanceMutex{nullptr};
         HWND _hwnd{nullptr};
         bool _runningAsPrimary{false};
+        std::atomic_bool _snapshotActive{false};
     };
 }

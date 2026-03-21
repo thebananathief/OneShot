@@ -4,6 +4,8 @@
 
 namespace
 {
+    constexpr UINT_PTR kOverlayPrewarmTimerId = 1;
+
     void WriteConsoleText(const std::wstring& text)
     {
         if (!AttachConsole(ATTACH_PARENT_PROCESS))
@@ -130,6 +132,7 @@ namespace oneshot
 
         _tray.Initialize(_hwnd);
         _server.Start();
+        SetTimer(_hwnd, kOverlayPrewarmTimerId, 750, nullptr);
 
         if (_mode == StartupMode::SendSnapshot)
         {
@@ -199,16 +202,29 @@ namespace oneshot
 
     void AppHost::HandleSnapshotRequested()
     {
+        bool expected = false;
+        if (!_snapshotActive.compare_exchange_strong(expected, true))
+        {
+            return;
+        }
+
+        const auto resetSnapshotActive = [this]()
+        {
+            _snapshotActive.store(false);
+        };
+
         const auto virtualCapture = _captureService.CaptureVirtualScreen();
         if (!virtualCapture.has_value())
         {
             _tray.ShowBalloon(L"OneShot", L"Virtual screen capture failed.");
+            resetSnapshotActive();
             return;
         }
 
         const auto selection = _overlayManager.SelectRegion(*virtualCapture, _hwnd);
         if (!selection.has_value())
         {
+            resetSnapshotActive();
             return;
         }
 
@@ -216,6 +232,7 @@ namespace oneshot
         if (!capture.has_value())
         {
             _tray.ShowBalloon(L"OneShot", L"Failed to crop the selected region.");
+            resetSnapshotActive();
             return;
         }
 
@@ -225,6 +242,7 @@ namespace oneshot
         {
             const auto message = std::wstring(L"Save failed: ") + outputError;
             _tray.ShowBalloon(L"OneShot", message);
+            resetSnapshotActive();
             return;
         }
 
@@ -232,6 +250,7 @@ namespace oneshot
         {
             const auto message = std::wstring(L"Clipboard copy failed: ") + outputError;
             _tray.ShowBalloon(L"OneShot", message);
+            resetSnapshotActive();
             return;
         }
 
@@ -241,10 +260,12 @@ namespace oneshot
         {
             const auto message = std::wstring(L"Saved screenshot, but temp drag image failed: ") + dragError;
             _tray.ShowBalloon(L"OneShot", message);
+            resetSnapshotActive();
             return;
         }
 
         _notificationManager.Show(_hwnd, std::move(*capture), savedPath, dragPath);
+        resetSnapshotActive();
     }
 
     CommandResponse AppHost::HandleCommand(const CommandEnvelope& envelope)
@@ -326,6 +347,14 @@ namespace oneshot
 
         switch (message)
         {
+        case WM_TIMER:
+            if (wParam == kOverlayPrewarmTimerId)
+            {
+                KillTimer(hwnd, kOverlayPrewarmTimerId);
+                self->_overlayManager.Prewarm(hwnd);
+                return 0;
+            }
+            break;
         case WM_COMMAND:
             switch (LOWORD(wParam))
             {

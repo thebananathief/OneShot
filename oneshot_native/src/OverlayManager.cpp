@@ -5,6 +5,7 @@
 namespace
 {
     struct OverlaySession;
+    LRESULT CALLBACK OverlayWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
 
     struct OverlayWindowState
     {
@@ -96,6 +97,22 @@ namespace
         }
 
         return TRUE;
+    }
+
+    void EnsureOverlayClassRegistered()
+    {
+        static const bool registered = []()
+        {
+            WNDCLASSW windowClass{};
+            windowClass.lpfnWndProc = OverlayWindowProc;
+            windowClass.hInstance = GetModuleHandleW(nullptr);
+            windowClass.lpszClassName = L"OneShotNative.Overlay";
+            windowClass.hCursor = LoadCursorW(nullptr, IDC_CROSS);
+            RegisterClassW(&windowClass);
+            return true;
+        }();
+
+        (void)registered;
     }
 
     LRESULT CALLBACK OverlayWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
@@ -249,14 +266,62 @@ namespace
 
 namespace oneshot
 {
+    void OverlayManager::Prewarm(HWND owner) const
+    {
+        EnsureOverlayClassRegistered();
+
+        std::vector<RECT> monitorBounds;
+        MonitorEnumData enumData{ &monitorBounds };
+        EnumDisplayMonitors(nullptr, nullptr, EnumMonitorsProc, reinterpret_cast<LPARAM>(&enumData));
+        if (monitorBounds.empty())
+        {
+            return;
+        }
+
+        std::vector<HWND> windows;
+        windows.reserve(monitorBounds.size());
+
+        for (const auto& bounds : monitorBounds)
+        {
+            auto* state = new OverlayWindowState();
+            state->monitorBounds = bounds;
+
+            HWND overlay = CreateWindowExW(
+                WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+                L"OneShotNative.Overlay",
+                L"OneShot Overlay",
+                WS_POPUP,
+                bounds.left,
+                bounds.top,
+                bounds.right - bounds.left,
+                bounds.bottom - bounds.top,
+                owner,
+                nullptr,
+                GetModuleHandleW(nullptr),
+                state);
+
+            if (!overlay)
+            {
+                delete state;
+                continue;
+            }
+
+            windows.push_back(overlay);
+            ShowWindow(overlay, SW_HIDE);
+            UpdateWindow(overlay);
+        }
+
+        for (const auto overlay : windows)
+        {
+            auto* state = reinterpret_cast<OverlayWindowState*>(GetWindowLongPtrW(overlay, GWLP_USERDATA));
+            DestroyWindow(overlay);
+            delete state;
+        }
+    }
+
     std::optional<RECT> OverlayManager::SelectRegion(const CapturedImage& image, HWND owner) const
     {
-        WNDCLASSW windowClass{};
-        windowClass.lpfnWndProc = OverlayWindowProc;
-        windowClass.hInstance = GetModuleHandleW(nullptr);
-        windowClass.lpszClassName = L"OneShotNative.Overlay";
-        windowClass.hCursor = LoadCursorW(nullptr, IDC_CROSS);
-        RegisterClassW(&windowClass);
+        EnsureOverlayClassRegistered();
 
         std::vector<RECT> monitorBounds;
         MonitorEnumData enumData{ &monitorBounds };
@@ -289,7 +354,7 @@ namespace oneshot
 
             HWND overlay = CreateWindowExW(
                 WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
-                windowClass.lpszClassName,
+                L"OneShotNative.Overlay",
                 L"OneShot Overlay",
                 WS_POPUP,
                 bounds.left,
