@@ -26,13 +26,15 @@ namespace
     constexpr int kCancelId = 2014;
     constexpr int kTextInputId = 2015;
     constexpr int kStrokeColorId = 2016;
-    constexpr int kThicknessDownId = 2017;
-    constexpr int kThicknessUpId = 2018;
-    constexpr int kFillToggleId = 2019;
-    constexpr int kFontDownId = 2020;
-    constexpr int kFontUpId = 2021;
-    constexpr int kFitId = 2022;
-    constexpr int kFontComboId = 2023;
+    constexpr int kFillColorId = 2017;
+    constexpr int kTextColorId = 2018;
+    constexpr int kThicknessDownId = 2019;
+    constexpr int kThicknessUpId = 2020;
+    constexpr int kFillToggleId = 2021;
+    constexpr int kFontDownId = 2022;
+    constexpr int kFontUpId = 2023;
+    constexpr int kFitId = 2024;
+    constexpr int kFontComboId = 2025;
     constexpr int kAngleSnapIncrementDegrees = 15;
 
     RECT MakeRect(int left, int top, int right, int bottom)
@@ -65,8 +67,9 @@ namespace oneshot
         POINT dragCurrent{};
         std::vector<POINT> polygonPoints;
         bool polygonInProgress{false};
-        COLORREF color{RGB(255, 0, 0)};
+        COLORREF strokeColor{RGB(255, 0, 0)};
         COLORREF fillColor{RGB(255, 224, 224)};
+        COLORREF fontColor{RGB(255, 0, 0)};
         int thickness{3};
         int fontSize{22};
         bool fillShapes{true};
@@ -415,7 +418,7 @@ namespace oneshot
         HDC memoryDc = CreateCompatibleDC(screenDc);
         HGDIOBJ previous = SelectObject(memoryDc, state.currentImage.bitmap);
 
-        HPEN pen = CreatePen(PS_SOLID, state.thickness, state.color);
+        HPEN pen = CreatePen(PS_SOLID, state.thickness, state.strokeColor);
         HGDIOBJ oldPen = SelectObject(memoryDc, pen);
         HBRUSH fillBrush = CreateSolidBrush(state.fillColor);
         HGDIOBJ oldBrush = SelectObject(memoryDc, state.fillShapes ? fillBrush : GetStockObject(HOLLOW_BRUSH));
@@ -431,7 +434,7 @@ namespace oneshot
             DeleteObject(pen);
             SelectObject(memoryDc, oldBrush);
             DeleteObject(fillBrush);
-            MarkupEditorWindow::DrawArrow(memoryDc, startPoint, endPoint, state.color, state.thickness);
+            MarkupEditorWindow::DrawArrow(memoryDc, startPoint, endPoint, state.strokeColor, state.thickness);
             pen = nullptr;
             break;
         case MarkupEditorWindow::Tool::Rectangle:
@@ -543,7 +546,7 @@ namespace oneshot
             POINT previewStart = ImagePointToClientPoint(canvasRect, state.zoom, start);
             POINT previewEnd = ImagePointToClientPoint(canvasRect, state.zoom, end);
 
-            HPEN pen = CreatePen(PS_DOT, 2, state.color);
+            HPEN pen = CreatePen(PS_DOT, 2, state.strokeColor);
             HGDIOBJ oldPen = SelectObject(hdc, pen);
             HGDIOBJ oldBrush = SelectObject(hdc, GetStockObject(HOLLOW_BRUSH));
             const bool keepAspectRatio = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
@@ -564,7 +567,7 @@ namespace oneshot
                 {
                     previewEnd = SnapLineEndpoint(previewStart, previewEnd);
                 }
-                MarkupEditorWindow::DrawArrow(hdc, previewStart, previewEnd, state.color, 2);
+                MarkupEditorWindow::DrawArrow(hdc, previewStart, previewEnd, state.strokeColor, 2);
                 break;
             case MarkupEditorWindow::Tool::Rectangle:
             {
@@ -621,7 +624,7 @@ namespace oneshot
             WS_OVERLAPPEDWINDOW | WS_VISIBLE,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-            1380,
+            1500,
             800,
             owner,
             nullptr,
@@ -676,20 +679,22 @@ namespace oneshot
             CreateWindowExW(0, L"Button", L"Ellipse", WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON, 304, 8, 70, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kToolEllipseId)), GetModuleHandleW(nullptr), nullptr);
             CreateWindowExW(0, L"Button", L"Poly", WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON, 378, 8, 56, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kToolPolygonId)), GetModuleHandleW(nullptr), nullptr);
             CreateWindowExW(0, L"Button", L"Text", WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON, 438, 8, 56, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kToolTextId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Color", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 498, 8, 54, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kStrokeColorId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Fill", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 556, 8, 42, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFillToggleId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"T-", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 602, 8, 30, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kThicknessDownId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"T+", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 636, 8, 30, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kThicknessUpId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"F-", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 670, 8, 30, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFontDownId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"F+", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 704, 8, 30, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFontUpId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Fit", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 738, 8, 40, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFitId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Undo", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 782, 8, 48, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kUndoId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Redo", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 834, 8, 48, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kRedoId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Copy", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 886, 8, 48, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCopyId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Done", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 938, 8, 48, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDoneId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Cancel", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 990, 8, 58, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCancelId)), GetModuleHandleW(nullptr), nullptr);
-            state->fontCombo = CreateWindowExW(0, L"ComboBox", nullptr, WS_CHILD | WS_VISIBLE | WS_VSCROLL | CBS_DROPDOWNLIST, 1052, 8, 150, 320, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFontComboId)), GetModuleHandleW(nullptr), nullptr);
-            state->textInput = CreateWindowExW(WS_EX_CLIENTEDGE, L"Edit", L"Text", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 1208, 8, 120, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTextInputId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Stroke", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 498, 8, 56, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kStrokeColorId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"FillClr", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 558, 8, 58, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFillColorId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"TextClr", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 620, 8, 58, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTextColorId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Fill", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 682, 8, 42, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFillToggleId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"T-", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 728, 8, 30, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kThicknessDownId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"T+", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 762, 8, 30, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kThicknessUpId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"F-", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 796, 8, 30, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFontDownId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"F+", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 830, 8, 30, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFontUpId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Fit", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 864, 8, 40, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFitId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Undo", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 908, 8, 48, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kUndoId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Redo", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 960, 8, 48, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kRedoId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Copy", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 1012, 8, 48, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCopyId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Done", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 1064, 8, 48, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDoneId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Cancel", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 1116, 8, 58, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCancelId)), GetModuleHandleW(nullptr), nullptr);
+            state->fontCombo = CreateWindowExW(0, L"ComboBox", nullptr, WS_CHILD | WS_VISIBLE | WS_VSCROLL | CBS_DROPDOWNLIST, 1178, 8, 150, 320, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFontComboId)), GetModuleHandleW(nullptr), nullptr);
+            state->textInput = CreateWindowExW(WS_EX_CLIENTEDGE, L"Edit", L"Text", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 1334, 8, 120, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTextInputId)), GetModuleHandleW(nullptr), nullptr);
             state->canvas = CreateWindowExW(0, L"OneShotNative.MarkupCanvas", L"", WS_CHILD | WS_VISIBLE, 0, kToolbarHeight, 100, 100, hwnd, nullptr, GetModuleHandleW(nullptr), state);
             PopulateFontCombo(state->fontCombo, state->fontFace);
             FitImageToViewport(*state);
@@ -747,7 +752,15 @@ namespace oneshot
                 return 0;
             }
             case kStrokeColorId:
-                ChooseEditorColor(hwnd, state->color, state->customColors);
+                ChooseEditorColor(hwnd, state->strokeColor, state->customColors);
+                InvalidateRect(state->canvas, nullptr, TRUE);
+                return 0;
+            case kFillColorId:
+                ChooseEditorColor(hwnd, state->fillColor, state->customColors);
+                InvalidateRect(state->canvas, nullptr, TRUE);
+                return 0;
+            case kTextColorId:
+                ChooseEditorColor(hwnd, state->fontColor, state->customColors);
                 InvalidateRect(state->canvas, nullptr, TRUE);
                 return 0;
             case kFillToggleId:
@@ -897,7 +910,7 @@ namespace oneshot
                     HDC memoryDc = CreateCompatibleDC(screenDc);
                     HGDIOBJ previous = SelectObject(memoryDc, state->currentImage.bitmap);
                     SetBkMode(memoryDc, TRANSPARENT);
-                    SetTextColor(memoryDc, state->color);
+                    SetTextColor(memoryDc, state->fontColor);
                     HFONT font = CreateFontW(state->fontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE, state->fontFace.c_str());
                     HGDIOBJ oldFont = SelectObject(memoryDc, font);
                     POINT mapped = ClientToImagePoint(state->imageRect, state->currentImage, state->zoom, point);
@@ -955,7 +968,7 @@ namespace oneshot
                     HDC screenDc = GetDC(nullptr);
                     HDC memoryDc = CreateCompatibleDC(screenDc);
                     HGDIOBJ previous = SelectObject(memoryDc, state->currentImage.bitmap);
-                    HPEN pen = CreatePen(PS_SOLID, state->thickness, state->color);
+                    HPEN pen = CreatePen(PS_SOLID, state->thickness, state->strokeColor);
                     HGDIOBJ oldPen = SelectObject(memoryDc, pen);
                     POINT start = ClientToImagePoint(state->imageRect, state->currentImage, state->zoom, state->dragCurrent);
                     POINT end = ClientToImagePoint(state->imageRect, state->currentImage, state->zoom, point);
