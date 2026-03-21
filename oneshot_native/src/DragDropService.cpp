@@ -21,6 +21,16 @@ namespace
         {
         }
 
+        static bool IsSupportedFormat(const FORMATETC* formatEtc)
+        {
+            if (!formatEtc || formatEtc->dwAspect != DVASPECT_CONTENT || !(formatEtc->tymed & TYMED_HGLOBAL))
+            {
+                return false;
+            }
+
+            return formatEtc->cfFormat == CF_HDROP || formatEtc->cfFormat == CF_UNICODETEXT;
+        }
+
         HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObject) override
         {
             if (!ppvObject)
@@ -61,29 +71,46 @@ namespace
                 return E_POINTER;
             }
 
-            if (formatEtc->cfFormat != CF_HDROP || !(formatEtc->tymed & TYMED_HGLOBAL))
+            if (!IsSupportedFormat(formatEtc))
             {
                 return DV_E_FORMATETC;
             }
 
             const auto widePath = _filePath.wstring();
-            const SIZE_T pathBytes = (widePath.size() + 1) * sizeof(wchar_t);
-            const SIZE_T totalBytes = sizeof(DropFilesHeader) + pathBytes + sizeof(wchar_t);
-
-            HGLOBAL global = GlobalAlloc(GHND, totalBytes);
-            if (!global)
+            HGLOBAL global = nullptr;
+            if (formatEtc->cfFormat == CF_HDROP)
             {
-                return E_OUTOFMEMORY;
+                const SIZE_T pathBytes = (widePath.size() + 1) * sizeof(wchar_t);
+                const SIZE_T totalBytes = sizeof(DropFilesHeader) + pathBytes + sizeof(wchar_t);
+
+                global = GlobalAlloc(GHND, totalBytes);
+                if (!global)
+                {
+                    return E_OUTOFMEMORY;
+                }
+
+                auto* dropFiles = static_cast<DropFilesHeader*>(GlobalLock(global));
+                dropFiles->pFiles = sizeof(DropFilesHeader);
+                dropFiles->fWide = TRUE;
+
+                auto* pathBuffer = reinterpret_cast<wchar_t*>(reinterpret_cast<BYTE*>(dropFiles) + sizeof(DropFilesHeader));
+                memcpy(pathBuffer, widePath.c_str(), pathBytes);
+                pathBuffer[widePath.size() + 1] = L'\0';
+                GlobalUnlock(global);
             }
+            else
+            {
+                const SIZE_T bytes = (widePath.size() + 1) * sizeof(wchar_t);
+                global = GlobalAlloc(GHND, bytes);
+                if (!global)
+                {
+                    return E_OUTOFMEMORY;
+                }
 
-            auto* dropFiles = static_cast<DropFilesHeader*>(GlobalLock(global));
-            dropFiles->pFiles = sizeof(DropFilesHeader);
-            dropFiles->fWide = TRUE;
-
-            auto* pathBuffer = reinterpret_cast<wchar_t*>(reinterpret_cast<BYTE*>(dropFiles) + sizeof(DropFilesHeader));
-            memcpy(pathBuffer, widePath.c_str(), pathBytes);
-            pathBuffer[widePath.size() + 1] = L'\0';
-            GlobalUnlock(global);
+                auto* buffer = static_cast<wchar_t*>(GlobalLock(global));
+                memcpy(buffer, widePath.c_str(), bytes);
+                GlobalUnlock(global);
+            }
 
             medium->tymed = TYMED_HGLOBAL;
             medium->hGlobal = global;
@@ -94,7 +121,7 @@ namespace
         HRESULT STDMETHODCALLTYPE GetDataHere(FORMATETC*, STGMEDIUM*) override { return E_NOTIMPL; }
         HRESULT STDMETHODCALLTYPE QueryGetData(FORMATETC* formatEtc) override
         {
-            if (formatEtc && formatEtc->cfFormat == CF_HDROP && (formatEtc->tymed & TYMED_HGLOBAL))
+            if (IsSupportedFormat(formatEtc))
             {
                 return S_OK;
             }
