@@ -6,6 +6,37 @@ $publishDir = Join-Path $root "artifacts\publish"
 $msiOut = Join-Path $root "artifacts\OneShot.msi"
 $versionFile = Join-Path $PSScriptRoot ".msi-build-counter"
 
+function Get-InstalledOneShotPatchVersion {
+    $uninstallRoots = @(
+        "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall",
+        "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall"
+    )
+
+    $maxPatch = 0
+    foreach ($rootPath in $uninstallRoots) {
+        if (-not (Test-Path $rootPath)) {
+            continue
+        }
+
+        Get-ChildItem $rootPath | ForEach-Object {
+            $item = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue
+            if ($null -eq $item -or $item.DisplayName -ne "OneShot" -or [string]::IsNullOrWhiteSpace($item.DisplayVersion)) {
+                return
+            }
+
+            $parts = $item.DisplayVersion.Split('.')
+            if ($parts.Length -ge 3 -and $parts[2] -match '^\d+$') {
+                $patch = [int]$parts[2]
+                if ($patch -gt $maxPatch) {
+                    $maxPatch = $patch
+                }
+            }
+        }
+    }
+
+    return $maxPatch
+}
+
 New-Item -ItemType Directory -Force $publishDir | Out-Null
 New-Item -ItemType Directory -Force $buildDir | Out-Null
 
@@ -20,7 +51,8 @@ if (Test-Path $versionFile) {
     $counter = 0
 }
 
-$nextCounter = $counter + 1
+$installedCounter = Get-InstalledOneShotPatchVersion
+$nextCounter = [Math]::Max($counter, $installedCounter) + 1
 if ($nextCounter -gt 65535) {
     throw "MSI build counter exceeded 65535. Reset installer/.msi-build-counter and choose a new major/minor version."
 }
