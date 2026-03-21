@@ -100,6 +100,11 @@ namespace oneshot
         double middlePanOffsetX{0.0};
         double middlePanOffsetY{0.0};
         std::wstring fontFace{L"Segoe UI"};
+        HDC canvasBackBufferDc{nullptr};
+        HBITMAP canvasBackBufferBitmap{nullptr};
+        HGDIOBJ canvasBackBufferOldBitmap{nullptr};
+        int canvasBackBufferWidth{0};
+        int canvasBackBufferHeight{0};
     };
 
     MarkupEditorWindow::MarkupEditorWindow(OutputService& outputService)
@@ -623,6 +628,85 @@ namespace oneshot
         state.currentImage.bitmap = snapshot;
     }
 
+    static void ReleaseCanvasBackBuffer(MarkupEditorWindow::State& state)
+    {
+        if (state.canvasBackBufferDc)
+        {
+            if (state.canvasBackBufferOldBitmap)
+            {
+                SelectObject(state.canvasBackBufferDc, state.canvasBackBufferOldBitmap);
+                state.canvasBackBufferOldBitmap = nullptr;
+            }
+            if (state.canvasBackBufferBitmap)
+            {
+                DeleteObject(state.canvasBackBufferBitmap);
+                state.canvasBackBufferBitmap = nullptr;
+            }
+            DeleteDC(state.canvasBackBufferDc);
+            state.canvasBackBufferDc = nullptr;
+        }
+
+        state.canvasBackBufferWidth = 0;
+        state.canvasBackBufferHeight = 0;
+    }
+
+    static bool EnsureCanvasBackBuffer(MarkupEditorWindow::State& state)
+    {
+        if (!state.canvas)
+        {
+            return false;
+        }
+
+        RECT client{};
+        GetClientRect(state.canvas, &client);
+        const int width = std::max(1, static_cast<int>(client.right - client.left));
+        const int height = std::max(1, static_cast<int>(client.bottom - client.top));
+
+        if (state.canvasBackBufferDc &&
+            state.canvasBackBufferBitmap &&
+            state.canvasBackBufferWidth == width &&
+            state.canvasBackBufferHeight == height)
+        {
+            return true;
+        }
+
+        ReleaseCanvasBackBuffer(state);
+
+        HDC windowDc = GetDC(state.canvas);
+        if (!windowDc)
+        {
+            return false;
+        }
+
+        state.canvasBackBufferDc = CreateCompatibleDC(windowDc);
+        if (!state.canvasBackBufferDc)
+        {
+            ReleaseDC(state.canvas, windowDc);
+            return false;
+        }
+
+        state.canvasBackBufferBitmap = CreateCompatibleBitmap(windowDc, width, height);
+        ReleaseDC(state.canvas, windowDc);
+        if (!state.canvasBackBufferBitmap)
+        {
+            ReleaseCanvasBackBuffer(state);
+            return false;
+        }
+
+        state.canvasBackBufferOldBitmap = SelectObject(state.canvasBackBufferDc, state.canvasBackBufferBitmap);
+        state.canvasBackBufferWidth = width;
+        state.canvasBackBufferHeight = height;
+        return true;
+    }
+
+    static void InvalidateCanvas(const MarkupEditorWindow::State& state)
+    {
+        if (state.canvas)
+        {
+            InvalidateRect(state.canvas, nullptr, FALSE);
+        }
+    }
+
     static void UpdateToolButtons(MarkupEditorWindow::State& state)
     {
         CheckRadioButton(state.hwnd, kToolPenId, kToolTextId,
@@ -639,17 +723,24 @@ namespace oneshot
     {
         RECT client{};
         GetClientRect(state.canvas, &client);
-        FillRect(hdc, &client, static_cast<HBRUSH>(GetStockObject(DKGRAY_BRUSH)));
+
+        HDC targetDc = hdc;
+        if (EnsureCanvasBackBuffer(state))
+        {
+            targetDc = state.canvasBackBufferDc;
+        }
+
+        FillRect(targetDc, &client, static_cast<HBRUSH>(GetStockObject(DKGRAY_BRUSH)));
 
         ClampViewportOffsets(state);
         state.imageRect = ComputeImageRect(state);
         RECT canvasRect = state.imageRect;
 
-        HDC memoryDc = CreateCompatibleDC(hdc);
+        HDC memoryDc = CreateCompatibleDC(targetDc);
         HGDIOBJ previous = SelectObject(memoryDc, state.currentImage.bitmap);
-        SetStretchBltMode(hdc, HALFTONE);
+        SetStretchBltMode(targetDc, HALFTONE);
         StretchBlt(
-            hdc,
+            targetDc,
             canvasRect.left,
             canvasRect.top,
             canvasRect.right - canvasRect.left,
@@ -663,12 +754,12 @@ namespace oneshot
         SelectObject(memoryDc, previous);
         DeleteDC(memoryDc);
 
-        FrameRect(hdc, &canvasRect, static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+        FrameRect(targetDc, &canvasRect, static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
 
         if (state.tool == MarkupEditorWindow::Tool::Polygon && state.polygonInProgress)
         {
             const POINT current = ClientToImagePoint(state.imageRect, state.currentImage, state.zoom, state.dragCurrent);
-            DrawPolygonPreview(hdc, canvasRect, state.currentImage, state.zoom, state.polygonPoints, current);
+            DrawPolygonPreview(targetDc, canvasRect, state.currentImage, state.zoom, state.polygonPoints, current);
         }
 
         if (state.previewActive && state.tool != MarkupEditorWindow::Tool::Pen && state.tool != MarkupEditorWindow::Tool::Polygon)
@@ -679,8 +770,8 @@ namespace oneshot
             POINT previewEnd = ImagePointToClientPoint(canvasRect, state.zoom, end);
 
             HPEN pen = CreatePen(PS_DOT, 2, state.strokeColor);
-            HGDIOBJ oldPen = SelectObject(hdc, pen);
-            HGDIOBJ oldBrush = SelectObject(hdc, GetStockObject(HOLLOW_BRUSH));
+            HGDIOBJ oldPen = SelectObject(targetDc, pen);
+            HGDIOBJ oldBrush = SelectObject(targetDc, GetStockObject(HOLLOW_BRUSH));
             const bool keepAspectRatio = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
             switch (state.tool)
             {
@@ -690,8 +781,8 @@ namespace oneshot
                 {
                     previewEnd = SnapLineEndpoint(previewStart, previewEnd);
                 }
-                MoveToEx(hdc, previewStart.x, previewStart.y, nullptr);
-                LineTo(hdc, previewEnd.x, previewEnd.y);
+                MoveToEx(targetDc, previewStart.x, previewStart.y, nullptr);
+                LineTo(targetDc, previewEnd.x, previewEnd.y);
                 break;
             }
             case MarkupEditorWindow::Tool::Arrow:
@@ -699,26 +790,31 @@ namespace oneshot
                 {
                     previewEnd = SnapLineEndpoint(previewStart, previewEnd);
                 }
-                MarkupEditorWindow::DrawArrow(hdc, previewStart, previewEnd, state.strokeColor, 2);
+                MarkupEditorWindow::DrawArrow(targetDc, previewStart, previewEnd, state.strokeColor, 2);
                 break;
             case MarkupEditorWindow::Tool::Rectangle:
             {
                 RECT rect = NormalizeShapeRect(previewStart, previewEnd, keepAspectRatio);
-                Rectangle(hdc, rect.left, rect.top, rect.right, rect.bottom);
+                Rectangle(targetDc, rect.left, rect.top, rect.right, rect.bottom);
                 break;
             }
             case MarkupEditorWindow::Tool::Ellipse:
             {
                 RECT rect = NormalizeShapeRect(previewStart, previewEnd, keepAspectRatio);
-                Ellipse(hdc, rect.left, rect.top, rect.right, rect.bottom);
+                Ellipse(targetDc, rect.left, rect.top, rect.right, rect.bottom);
                 break;
             }
             default:
                 break;
             }
-            SelectObject(hdc, oldBrush);
-            SelectObject(hdc, oldPen);
+            SelectObject(targetDc, oldBrush);
+            SelectObject(targetDc, oldPen);
             DeleteObject(pen);
+        }
+
+        if (targetDc != hdc)
+        {
+            BitBlt(hdc, 0, 0, state.canvasBackBufferWidth, state.canvasBackBufferHeight, targetDc, 0, 0, SRCCOPY);
         }
     }
 
@@ -837,7 +933,7 @@ namespace oneshot
             {
                 MoveWindow(state->canvas, 0, kToolbarHeight, LOWORD(lParam), HIWORD(lParam) - kToolbarHeight, TRUE);
                 UpdateZoomBounds(*state, true);
-                InvalidateRect(state->canvas, nullptr, TRUE);
+                InvalidateCanvas(*state);
             }
             return 0;
         case WM_COMMAND:
@@ -860,7 +956,7 @@ namespace oneshot
                     HBITMAP snapshot = state->undoStack.back();
                     state->undoStack.pop_back();
                     RestoreBitmap(*state, snapshot);
-                    InvalidateRect(state->canvas, nullptr, TRUE);
+                    InvalidateCanvas(*state);
                 }
                 return 0;
             case kRedoId:
@@ -873,7 +969,7 @@ namespace oneshot
                     HBITMAP snapshot = state->redoStack.back();
                     state->redoStack.pop_back();
                     RestoreBitmap(*state, snapshot);
-                    InvalidateRect(state->canvas, nullptr, TRUE);
+                    InvalidateCanvas(*state);
                 }
                 return 0;
             case kCopyId:
@@ -884,40 +980,40 @@ namespace oneshot
             }
             case kStrokeColorId:
                 ChooseEditorColor(hwnd, state->strokeColor, state->customColors);
-                InvalidateRect(state->canvas, nullptr, TRUE);
+                InvalidateCanvas(*state);
                 return 0;
             case kFillColorId:
                 ChooseEditorColor(hwnd, state->fillColor, state->customColors);
-                InvalidateRect(state->canvas, nullptr, TRUE);
+                InvalidateCanvas(*state);
                 return 0;
             case kTextColorId:
                 ChooseEditorColor(hwnd, state->fontColor, state->customColors);
-                InvalidateRect(state->canvas, nullptr, TRUE);
+                InvalidateCanvas(*state);
                 return 0;
             case kFillToggleId:
                 state->fillShapes = IsDlgButtonChecked(hwnd, kFillToggleId) == BST_CHECKED;
-                InvalidateRect(state->canvas, nullptr, TRUE);
+                InvalidateCanvas(*state);
                 return 0;
             case kThicknessDownId:
                 state->thickness = std::max(1, state->thickness - 1);
-                InvalidateRect(state->canvas, nullptr, TRUE);
+                InvalidateCanvas(*state);
                 return 0;
             case kThicknessUpId:
                 state->thickness = std::min(16, state->thickness + 1);
-                InvalidateRect(state->canvas, nullptr, TRUE);
+                InvalidateCanvas(*state);
                 return 0;
             case kFontDownId:
                 state->fontSize = std::max(8, state->fontSize - 2);
-                InvalidateRect(state->canvas, nullptr, TRUE);
+                InvalidateCanvas(*state);
                 return 0;
             case kFontUpId:
                 state->fontSize = std::min(96, state->fontSize + 2);
-                InvalidateRect(state->canvas, nullptr, TRUE);
+                InvalidateCanvas(*state);
                 return 0;
             case kFitId:
                 state->userAdjustedViewport = false;
                 FitImageToViewport(*state);
-                InvalidateRect(state->canvas, nullptr, TRUE);
+                InvalidateCanvas(*state);
                 return 0;
             case kDoneId:
                 state->resultImage = std::move(state->currentImage);
@@ -968,6 +1064,7 @@ namespace oneshot
             }
             break;
         case WM_DESTROY:
+            ReleaseCanvasBackBuffer(*state);
             return 0;
         default:
             break;
@@ -995,6 +1092,12 @@ namespace oneshot
 
         switch (message)
         {
+        case WM_ERASEBKGND:
+            return TRUE;
+        case WM_SIZE:
+            EnsureCanvasBackBuffer(*state);
+            InvalidateCanvas(*state);
+            return 0;
         case WM_LBUTTONDOWN:
         {
             SetFocus(hwnd);
@@ -1028,7 +1131,7 @@ namespace oneshot
                 state->dragCurrent = point;
                 ReleaseCapture();
                 state->isDrawing = false;
-                InvalidateRect(hwnd, nullptr, TRUE);
+                InvalidateCanvas(*state);
             }
             else if (state->tool == Tool::Text)
             {
@@ -1050,7 +1153,7 @@ namespace oneshot
                     SelectObject(memoryDc, previous);
                     DeleteDC(memoryDc);
                     ReleaseDC(nullptr, screenDc);
-                    InvalidateRect(hwnd, nullptr, TRUE);
+                    InvalidateCanvas(*state);
                 }
                 state->isDrawing = false;
                 ReleaseCapture();
@@ -1077,7 +1180,7 @@ namespace oneshot
                 state->viewportOffsetY = state->middlePanOffsetY - (point.y - state->middlePanStart.y);
                 ClampViewportOffsets(*state);
                 state->imageRect = ComputeImageRect(*state);
-                InvalidateRect(hwnd, nullptr, TRUE);
+                InvalidateCanvas(*state);
                 return 0;
             }
 
@@ -1085,7 +1188,7 @@ namespace oneshot
             {
                 POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
                 state->dragCurrent = ClampPointToImage(state->imageRect, point);
-                InvalidateRect(hwnd, nullptr, TRUE);
+                InvalidateCanvas(*state);
                 return 0;
             }
 
@@ -1110,12 +1213,12 @@ namespace oneshot
                     DeleteDC(memoryDc);
                     ReleaseDC(nullptr, screenDc);
                     state->dragCurrent = point;
-                    InvalidateRect(hwnd, nullptr, TRUE);
+                    InvalidateCanvas(*state);
                 }
                 else
                 {
                     state->dragCurrent = point;
-                    InvalidateRect(hwnd, nullptr, TRUE);
+                    InvalidateCanvas(*state);
                 }
             }
             return 0;
@@ -1170,7 +1273,7 @@ namespace oneshot
                     }
                     CommitPreview(*state, start, end);
                     state->previewActive = false;
-                    InvalidateRect(hwnd, nullptr, TRUE);
+                    InvalidateCanvas(*state);
                 }
 
                 state->isDrawing = false;
@@ -1208,7 +1311,7 @@ namespace oneshot
             state->viewportOffsetY = (imagePoint.y * state->zoom) + hostOriginY + client.top - point.y;
             ClampViewportOffsets(*state);
             state->imageRect = ComputeImageRect(*state);
-            InvalidateRect(hwnd, nullptr, TRUE);
+            InvalidateCanvas(*state);
             return 0;
         }
         case WM_RBUTTONUP:
@@ -1222,7 +1325,7 @@ namespace oneshot
                 state->polygonPoints.clear();
                 state->polygonInProgress = false;
                 state->previewActive = false;
-                InvalidateRect(hwnd, nullptr, TRUE);
+                InvalidateCanvas(*state);
             }
             return 0;
         case WM_PAINT:
@@ -1233,6 +1336,9 @@ namespace oneshot
             EndPaint(hwnd, &paint);
             return 0;
         }
+        case WM_DESTROY:
+            ReleaseCanvasBackBuffer(*state);
+            return 0;
         default:
             break;
         }
