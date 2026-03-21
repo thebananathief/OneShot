@@ -1,66 +1,96 @@
 #include "oneshot_native/NotificationManager.h"
 
+#include "oneshot_native/UiTheme.h"
+
 #include <commctrl.h>
 #include <windowsx.h>
 
 namespace
 {
     constexpr int kNotificationMargin = 16;
-    constexpr int kNotificationGap = 8;
+    constexpr int kNotificationGap = 10;
     constexpr UINT_PTR kPulseTimerId = 1;
+    constexpr UINT_PTR kHoverPropValue = 1;
     constexpr int kThumbControlId = 100;
     constexpr int kMarkupButtonId = 101;
     constexpr int kDismissButtonId = 102;
     constexpr int kDragThreshold = 4;
-    constexpr COLORREF kBorderColor = RGB(128, 128, 128);
-    constexpr COLORREF kThumbBorderColor = RGB(160, 160, 160);
+    constexpr int kPulseFrameCount = 10;
+    constexpr int kPulseTimerMs = 32;
+    constexpr wchar_t kHoverProp[] = L"OneShot.NotificationHover";
 
     struct NotificationLayout
     {
         int dpi{96};
+        int windowWidth{332};
+        int windowHeight{160};
+        int shadowOffsetX{4};
+        int shadowOffsetY{6};
         int borderThickness{1};
-        int outerPadding{4};
-        int columnGap{4};
-        int buttonSize{48};
-        int cardWidth{258};
-        int cardHeight{119};
+        RECT cardRect{};
         RECT thumbnailRect{};
         RECT dismissButtonRect{};
         RECT markupButtonRect{};
     };
-
-    int ScaleValue(int value, int dpi)
-    {
-        return MulDiv(value, dpi, 96);
-    }
 
     RECT MakeRect(int left, int top, int width, int height)
     {
         return RECT{ left, top, left + width, top + height };
     }
 
+    bool IsHovering(HWND hwnd)
+    {
+        return GetPropW(hwnd, kHoverProp) != nullptr;
+    }
+
+    void SetHover(HWND hwnd, bool hover)
+    {
+        if (hover)
+        {
+            SetPropW(hwnd, kHoverProp, reinterpret_cast<HANDLE>(kHoverPropValue));
+        }
+        else
+        {
+            RemovePropW(hwnd, kHoverProp);
+        }
+    }
+
+    int ScaleValue(int value, int dpi)
+    {
+        return oneshot::ui::ScaleForDpi(value, static_cast<UINT>(dpi <= 0 ? 96 : dpi));
+    }
+
     NotificationLayout BuildLayout(int dpi)
     {
         NotificationLayout layout{};
         layout.dpi = dpi > 0 ? dpi : 96;
+        layout.windowWidth = ScaleValue(332, layout.dpi);
+        layout.windowHeight = ScaleValue(160, layout.dpi);
+        layout.shadowOffsetX = ScaleValue(4, layout.dpi);
+        layout.shadowOffsetY = ScaleValue(6, layout.dpi);
         layout.borderThickness = ScaleValue(1, layout.dpi);
-        layout.outerPadding = ScaleValue(4, layout.dpi);
-        layout.columnGap = ScaleValue(4, layout.dpi);
-        layout.buttonSize = ScaleValue(48, layout.dpi);
-        layout.cardWidth = ScaleValue(258, layout.dpi);
-        layout.cardHeight = ScaleValue(119, layout.dpi);
 
-        const int contentLeft = layout.outerPadding;
-        const int contentTop = layout.outerPadding;
-        const int contentWidth = layout.cardWidth - (layout.outerPadding * 2);
-        const int contentHeight = layout.cardHeight - (layout.outerPadding * 2);
-        const int thumbnailWidth = contentWidth - layout.buttonSize - layout.columnGap;
-        const int thumbnailHeight = contentHeight;
-        const int buttonLeft = contentLeft + thumbnailWidth + layout.columnGap;
+        const int cardLeft = ScaleValue(3, layout.dpi);
+        const int cardTop = ScaleValue(3, layout.dpi);
+        const int cardWidth = layout.windowWidth - layout.shadowOffsetX - ScaleValue(5, layout.dpi);
+        const int cardHeight = layout.windowHeight - layout.shadowOffsetY - ScaleValue(5, layout.dpi);
+        layout.cardRect = MakeRect(cardLeft, cardTop, cardWidth, cardHeight);
 
-        layout.thumbnailRect = MakeRect(contentLeft, contentTop, thumbnailWidth, thumbnailHeight);
-        layout.dismissButtonRect = MakeRect(buttonLeft, contentTop, layout.buttonSize, layout.buttonSize);
-        layout.markupButtonRect = MakeRect(buttonLeft, contentTop + contentHeight - layout.buttonSize, layout.buttonSize, layout.buttonSize);
+        const int outerPadding = ScaleValue(12, layout.dpi);
+        const int columnGap = ScaleValue(10, layout.dpi);
+        const int actionWidth = ScaleValue(84, layout.dpi);
+        const int dismissHeight = ScaleValue(36, layout.dpi);
+        const int markupHeight = ScaleValue(44, layout.dpi);
+        const int contentHeight = (layout.cardRect.bottom - layout.cardRect.top) - (outerPadding * 2);
+        const int contentWidth = (layout.cardRect.right - layout.cardRect.left) - (outerPadding * 2);
+        const int thumbWidth = contentWidth - actionWidth - columnGap;
+        const int thumbHeight = contentHeight;
+        const int actionLeft = layout.cardRect.right - outerPadding - actionWidth;
+        const int actionTop = layout.cardRect.top + outerPadding;
+
+        layout.thumbnailRect = MakeRect(layout.cardRect.left + outerPadding, layout.cardRect.top + outerPadding, thumbWidth, thumbHeight);
+        layout.dismissButtonRect = MakeRect(actionLeft, actionTop, actionWidth, dismissHeight);
+        layout.markupButtonRect = MakeRect(actionLeft, layout.cardRect.bottom - outerPadding - markupHeight, actionWidth, markupHeight);
         return layout;
     }
 
@@ -69,6 +99,35 @@ namespace
         RECT workArea{};
         SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
         return workArea;
+    }
+
+    COLORREF ComputePulseColor(COLORREF base, COLORREF pulse, int pulseFrame)
+    {
+        if (pulseFrame <= 0 || pulseFrame >= kPulseFrameCount)
+        {
+            return base;
+        }
+
+        const int midpoint = kPulseFrameCount / 2;
+        const int distance = pulseFrame <= midpoint ? pulseFrame : (kPulseFrameCount - pulseFrame);
+        const BYTE alpha = static_cast<BYTE>(std::min(170, (distance * 170) / std::max(1, midpoint)));
+        return oneshot::ui::BlendColor(base, pulse, alpha);
+    }
+
+    void TrackHover(HWND hwnd)
+    {
+        if (IsHovering(hwnd))
+        {
+            return;
+        }
+
+        TRACKMOUSEEVENT track{};
+        track.cbSize = sizeof(track);
+        track.dwFlags = TME_LEAVE;
+        track.hwndTrack = hwnd;
+        TrackMouseEvent(&track);
+        SetHover(hwnd, true);
+        InvalidateRect(hwnd, nullptr, FALSE);
     }
 }
 
@@ -85,13 +144,14 @@ namespace oneshot
         std::filesystem::path savedPath;
         std::filesystem::path dragPath;
         HBITMAP thumbnailBitmap{nullptr};
+        HFONT uiFont{nullptr};
+        HFONT uiBoldFont{nullptr};
         POINT dragAnchor{};
         bool pointerDown{false};
         bool dragInProgress{false};
-        COLORREF baseBackgroundColor{RGB(45, 45, 48)};
-        COLORREF pulseBackgroundColor{RGB(61, 121, 216)};
-        COLORREF backgroundColor{RGB(45, 45, 48)};
-        HBRUSH backgroundBrush{nullptr};
+        COLORREF baseBackgroundColor{ui::GetPalette().panelBackground};
+        COLORREF pulseBackgroundColor{ui::GetPalette().accent};
+        COLORREF backgroundColor{ui::GetPalette().panelBackground};
         int pulseFrame{0};
         NotificationLayout layout{};
     };
@@ -135,6 +195,20 @@ namespace oneshot
         InvalidateRect(notification->thumbnail, nullptr, TRUE);
     }
 
+    static void ConfigureButton(HWND button, HFONT font)
+    {
+        if (!button)
+        {
+            return;
+        }
+
+        LONG_PTR style = GetWindowLongPtrW(button, GWL_STYLE);
+        style &= ~BS_TYPEMASK;
+        style |= BS_OWNERDRAW;
+        SetWindowLongPtrW(button, GWL_STYLE, style);
+        SendMessageW(button, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+    }
+
     static void ApplyLayout(NotificationManager::NotificationWindow* notification)
     {
         if (!notification || !notification->hwnd)
@@ -171,6 +245,84 @@ namespace oneshot
         InvalidateRect(notification->hwnd, nullptr, TRUE);
     }
 
+    static void DrawNotificationButton(const NotificationManager::NotificationWindow& notification, const DRAWITEMSTRUCT& draw)
+    {
+        const auto& palette = ui::GetPalette();
+        const bool hovered = IsHovering(draw.hwndItem) || (draw.itemState & ODS_HOTLIGHT) != 0;
+        const bool pressed = (draw.itemState & ODS_SELECTED) != 0;
+        const bool focused = (draw.itemState & ODS_FOCUS) != 0;
+        const bool dismiss = draw.CtlID == kDismissButtonId;
+
+        COLORREF fill = dismiss ? palette.dangerBackground : palette.accent;
+        COLORREF border = dismiss ? palette.dangerBackgroundHot : palette.accentHot;
+        COLORREF text = palette.text;
+
+        if (!dismiss)
+        {
+            fill = hovered ? palette.accentHot : palette.accent;
+            if (pressed)
+            {
+                fill = palette.accentPressed;
+            }
+        }
+        else
+        {
+            if (hovered)
+            {
+                fill = palette.dangerBackgroundHot;
+            }
+            if (pressed)
+            {
+                fill = palette.dangerBackgroundPressed;
+            }
+            text = RGB(251, 239, 244);
+        }
+
+        ui::FillRoundedRect(draw.hDC, draw.rcItem, fill, 14);
+        ui::FrameRoundedRect(draw.hDC, draw.rcItem, border, 14);
+
+        wchar_t label[32]{};
+        GetWindowTextW(draw.hwndItem, label, static_cast<int>(std::size(label)));
+        HFONT font = reinterpret_cast<HFONT>(SendMessageW(draw.hwndItem, WM_GETFONT, 0, 0));
+        HGDIOBJ oldFont = font ? SelectObject(draw.hDC, font) : nullptr;
+        SetBkMode(draw.hDC, TRANSPARENT);
+        SetTextColor(draw.hDC, text);
+        RECT textRect = draw.rcItem;
+        DrawTextW(draw.hDC, label, -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        if (oldFont)
+        {
+            SelectObject(draw.hDC, oldFont);
+        }
+        if (focused)
+        {
+            RECT focusRect = draw.rcItem;
+            InflateRect(&focusRect, -4, -4);
+            DrawFocusRect(draw.hDC, &focusRect);
+        }
+    }
+
+    static LRESULT CALLBACK NotificationButtonProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR)
+    {
+        switch (message)
+        {
+        case WM_MOUSEMOVE:
+            TrackHover(hwnd);
+            break;
+        case WM_MOUSELEAVE:
+            SetHover(hwnd, false);
+            InvalidateRect(hwnd, nullptr, FALSE);
+            break;
+        case WM_NCDESTROY:
+            RemoveWindowSubclass(hwnd, NotificationButtonProc, 0);
+            RemovePropW(hwnd, kHoverProp);
+            break;
+        default:
+            break;
+        }
+
+        return DefSubclassProc(hwnd, message, wParam, lParam);
+    }
+
     static LRESULT CALLBACK NotificationThumbnailProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
     {
         auto* notification = reinterpret_cast<NotificationManager::NotificationWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -190,6 +342,23 @@ namespace oneshot
 
         switch (message)
         {
+        case WM_MOUSEMOVE:
+            TrackHover(hwnd);
+            if (notification->pointerDown && !notification->dragInProgress && (wParam & MK_LBUTTON))
+            {
+                const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+                if (abs(point.x - notification->dragAnchor.x) >= kDragThreshold || abs(point.y - notification->dragAnchor.y) >= kDragThreshold)
+                {
+                    notification->dragInProgress = true;
+                    notification->manager->StartDrag(notification);
+                    ResetThumbnailDragState(notification);
+                }
+            }
+            return 0;
+        case WM_MOUSELEAVE:
+            SetHover(hwnd, false);
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
         case WM_SETCURSOR:
             SetCursor(LoadCursorW(nullptr, IDC_HAND));
             return TRUE;
@@ -202,34 +371,20 @@ namespace oneshot
             notification->dragAnchor = POINT{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
             SetCapture(hwnd);
             return 0;
-        case WM_MOUSEMOVE:
-            if (notification->pointerDown && !notification->dragInProgress && (wParam & MK_LBUTTON))
-            {
-                const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-                if (abs(point.x - notification->dragAnchor.x) >= kDragThreshold || abs(point.y - notification->dragAnchor.y) >= kDragThreshold)
-                {
-                    notification->dragInProgress = true;
-                    notification->manager->StartDrag(notification);
-                    ResetThumbnailDragState(notification);
-                }
-            }
-            return 0;
         case WM_LBUTTONUP:
             ResetThumbnailDragState(notification);
             return 0;
         case WM_PAINT:
         {
+            const auto& palette = ui::GetPalette();
             PAINTSTRUCT paint{};
             HDC dc = BeginPaint(hwnd, &paint);
 
             RECT client{};
             GetClientRect(hwnd, &client);
-            HBRUSH fillBrush = CreateSolidBrush(notification->baseBackgroundColor);
-            FillRect(dc, &client, fillBrush);
-            DeleteObject(fillBrush);
-            HBRUSH borderBrush = CreateSolidBrush(kThumbBorderColor);
-            FrameRect(dc, &client, borderBrush);
-            DeleteObject(borderBrush);
+            const COLORREF borderColor = IsHovering(hwnd) ? palette.accentHot : palette.panelBorder;
+            ui::FillRoundedRect(dc, client, RGB(16, 22, 30), 18);
+            ui::FrameRoundedRect(dc, client, borderColor, 18);
 
             if (notification->thumbnailBitmap)
             {
@@ -238,12 +393,11 @@ namespace oneshot
                 {
                     HDC memoryDc = CreateCompatibleDC(dc);
                     HGDIOBJ oldBitmap = SelectObject(memoryDc, notification->thumbnailBitmap);
-                    const int contentLeft = notification->layout.borderThickness;
-                    const int contentTop = notification->layout.borderThickness;
-                    const int contentWidth = std::max<int>(0, (client.right - client.left) - (notification->layout.borderThickness * 2));
-                    const int contentHeight = std::max<int>(0, (client.bottom - client.top) - (notification->layout.borderThickness * 2));
+                    const int inset = ScaleValue(1, notification->layout.dpi);
+                    const int contentWidth = std::max<int>(0, static_cast<int>(client.right - client.left) - (inset * 2));
+                    const int contentHeight = std::max<int>(0, static_cast<int>(client.bottom - client.top) - (inset * 2));
                     SetStretchBltMode(dc, HALFTONE);
-                    StretchBlt(dc, contentLeft, contentTop, contentWidth, contentHeight, memoryDc, 0, 0, bitmap.bmWidth, bitmap.bmHeight, SRCCOPY);
+                    StretchBlt(dc, inset, inset, contentWidth, contentHeight, memoryDc, 0, 0, bitmap.bmWidth, bitmap.bmHeight, SRCCOPY);
                     SelectObject(memoryDc, oldBitmap);
                     DeleteDC(memoryDc);
                 }
@@ -280,35 +434,35 @@ namespace oneshot
         {
         case WM_ERASEBKGND:
             return TRUE;
-        case WM_CTLCOLORBTN:
-        case WM_CTLCOLORSTATIC:
-        {
-            auto dc = reinterpret_cast<HDC>(wParam);
-            SetBkMode(dc, TRANSPARENT);
-            SetTextColor(dc, RGB(240, 240, 240));
-            return reinterpret_cast<INT_PTR>(notification->backgroundBrush);
-        }
+        case WM_CREATE:
+            ui::ApplyModernFrame(hwnd, true);
+            return 0;
         case WM_TIMER:
             if (wParam == kPulseTimerId)
             {
                 notification->pulseFrame++;
-                notification->backgroundColor = notification->pulseFrame == 1 ? notification->pulseBackgroundColor : notification->baseBackgroundColor;
-                if (notification->backgroundBrush)
-                {
-                    DeleteObject(notification->backgroundBrush);
-                }
-                notification->backgroundBrush = CreateSolidBrush(notification->backgroundColor);
-                InvalidateRect(hwnd, nullptr, TRUE);
-                UpdateWindow(hwnd);
-
-                if (notification->pulseFrame >= 2)
+                notification->backgroundColor = ComputePulseColor(notification->baseBackgroundColor, notification->pulseBackgroundColor, notification->pulseFrame);
+                InvalidateRect(hwnd, nullptr, FALSE);
+                if (notification->pulseFrame >= kPulseFrameCount)
                 {
                     KillTimer(hwnd, kPulseTimerId);
                     notification->pulseFrame = 0;
+                    notification->backgroundColor = notification->baseBackgroundColor;
                 }
                 return 0;
             }
             break;
+        case WM_DRAWITEM:
+        {
+            auto* draw = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
+            if (!draw)
+            {
+                break;
+            }
+
+            DrawNotificationButton(*notification, *draw);
+            return TRUE;
+        }
         case WM_COMMAND:
             switch (LOWORD(wParam))
             {
@@ -331,28 +485,41 @@ namespace oneshot
                 nullptr,
                 suggestedRect->left,
                 suggestedRect->top,
-                suggestedRect->right - suggestedRect->left,
-                suggestedRect->bottom - suggestedRect->top,
+                notification->layout.windowWidth,
+                notification->layout.windowHeight,
                 SWP_NOACTIVATE | SWP_NOZORDER);
+            if (notification->uiFont)
+            {
+                DeleteObject(notification->uiFont);
+                notification->uiFont = ui::CreateUiFont(hwnd, 10);
+                SendMessageW(notification->dismissButton, WM_SETFONT, reinterpret_cast<WPARAM>(notification->uiFont), TRUE);
+            }
+            if (notification->uiBoldFont)
+            {
+                DeleteObject(notification->uiBoldFont);
+                notification->uiBoldFont = ui::CreateUiFont(hwnd, 10, FW_SEMIBOLD);
+                SendMessageW(notification->markupButton, WM_SETFONT, reinterpret_cast<WPARAM>(notification->uiBoldFont), TRUE);
+            }
             ApplyLayout(notification);
             return 0;
         }
         case WM_PAINT:
         {
+            const auto& palette = ui::GetPalette();
             PAINTSTRUCT paint{};
             HDC dc = BeginPaint(hwnd, &paint);
 
             RECT client{};
             GetClientRect(hwnd, &client);
-            FillRect(dc, &client, notification->backgroundBrush);
+            HBRUSH clearBrush = CreateSolidBrush(palette.windowBackground);
+            FillRect(dc, &client, clearBrush);
+            DeleteObject(clearBrush);
 
-            HPEN pen = CreatePen(PS_SOLID, notification->layout.borderThickness, kBorderColor);
-            HGDIOBJ oldPen = SelectObject(dc, pen);
-            HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-            Rectangle(dc, client.left, client.top, client.right, client.bottom);
-            SelectObject(dc, oldBrush);
-            SelectObject(dc, oldPen);
-            DeleteObject(pen);
+            RECT shadowRect = notification->layout.cardRect;
+            OffsetRect(&shadowRect, notification->layout.shadowOffsetX, notification->layout.shadowOffsetY);
+            ui::FillRoundedRect(dc, shadowRect, RGB(10, 14, 21), 22);
+            ui::FillRoundedRect(dc, notification->layout.cardRect, notification->backgroundColor, 22);
+            ui::FrameRoundedRect(dc, notification->layout.cardRect, palette.panelBorder, 22, notification->layout.borderThickness);
 
             EndPaint(hwnd, &paint);
             return 0;
@@ -365,10 +532,15 @@ namespace oneshot
                 DeleteObject(notification->thumbnailBitmap);
                 notification->thumbnailBitmap = nullptr;
             }
-            if (notification->backgroundBrush)
+            if (notification->uiFont)
             {
-                DeleteObject(notification->backgroundBrush);
-                notification->backgroundBrush = nullptr;
+                DeleteObject(notification->uiFont);
+                notification->uiFont = nullptr;
+            }
+            if (notification->uiBoldFont)
+            {
+                DeleteObject(notification->uiBoldFont);
+                notification->uiBoldFont = nullptr;
             }
             return 0;
         default:
@@ -410,7 +582,6 @@ namespace oneshot
         notification->image = std::move(image);
         notification->savedPath = savedPath;
         notification->dragPath = dragPath;
-        notification->backgroundBrush = CreateSolidBrush(notification->backgroundColor);
         notification->layout = BuildLayout(96);
 
         notification->hwnd = CreateWindowExW(
@@ -420,8 +591,8 @@ namespace oneshot
             WS_POPUP,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-            notification->layout.cardWidth,
-            notification->layout.cardHeight,
+            notification->layout.windowWidth,
+            notification->layout.windowHeight,
             owner,
             nullptr,
             GetModuleHandleW(nullptr),
@@ -432,6 +603,8 @@ namespace oneshot
             return;
         }
 
+        notification->uiFont = ui::CreateUiFont(notification->hwnd, 10);
+        notification->uiBoldFont = ui::CreateUiFont(notification->hwnd, 10, FW_SEMIBOLD);
         notification->layout = BuildLayout(static_cast<int>(GetDpiForWindow(notification->hwnd)));
         notification->thumbnail = CreateWindowExW(
             0,
@@ -449,8 +622,8 @@ namespace oneshot
         notification->dismissButton = CreateWindowExW(
             0,
             WC_BUTTONW,
-            L"X",
-            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            L"Close",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
             0,
             0,
             0,
@@ -463,7 +636,7 @@ namespace oneshot
             0,
             WC_BUTTONW,
             L"Markup",
-            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
             0,
             0,
             0,
@@ -473,9 +646,10 @@ namespace oneshot
             GetModuleHandleW(nullptr),
             nullptr);
 
-        HFONT font = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
-        SendMessageW(notification->dismissButton, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
-        SendMessageW(notification->markupButton, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        ConfigureButton(notification->dismissButton, notification->uiFont);
+        ConfigureButton(notification->markupButton, notification->uiBoldFont);
+        SetWindowSubclass(notification->dismissButton, NotificationButtonProc, 0, 0);
+        SetWindowSubclass(notification->markupButton, NotificationButtonProc, 0, 0);
 
         ApplyLayout(notification.get());
 
@@ -534,13 +708,8 @@ namespace oneshot
         KillTimer(notification->hwnd, kPulseTimerId);
         notification->pulseFrame = 0;
         notification->backgroundColor = notification->baseBackgroundColor;
-        if (notification->backgroundBrush)
-        {
-            DeleteObject(notification->backgroundBrush);
-        }
-        notification->backgroundBrush = CreateSolidBrush(notification->backgroundColor);
-        SetTimer(notification->hwnd, kPulseTimerId, 250, nullptr);
-        InvalidateRect(notification->hwnd, nullptr, TRUE);
+        SetTimer(notification->hwnd, kPulseTimerId, kPulseTimerMs, nullptr);
+        InvalidateRect(notification->hwnd, nullptr, FALSE);
     }
 
     void NotificationManager::RepositionAll()
@@ -555,8 +724,8 @@ namespace oneshot
                 continue;
             }
 
-            const int width = notification->layout.cardWidth;
-            const int height = notification->layout.cardHeight;
+            const int width = notification->layout.windowWidth;
+            const int height = notification->layout.windowHeight;
             const int left = workArea.right - kNotificationMargin - width;
             SetWindowPos(notification->hwnd, HWND_TOPMOST, left, top, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
             top += height + kNotificationGap;

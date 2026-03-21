@@ -1,13 +1,16 @@
 #include "oneshot_native/MarkupEditorWindow.h"
 
+#include <commctrl.h>
 #include <windowsx.h>
 #include <cmath>
 #include <commdlg.h>
+#include <dwmapi.h>
 
 namespace
 {
-    constexpr int kToolbarHeight = 42;
-    constexpr int kMargin = 8;
+    constexpr int kToolbarHeight = 84;
+    constexpr int kToolbarGroupHeight = 52;
+    constexpr int kMargin = 16;
     constexpr double kMaxZoom = 8.0;
     constexpr double kFitPaddingFactor = 0.99;
     constexpr double kZoomStep = 1.1;
@@ -39,6 +42,48 @@ namespace
     constexpr int kPromptEditId = 3001;
     constexpr int kPromptOkId = 3002;
     constexpr int kPromptCancelId = 3003;
+    constexpr int kToolbarLabelId = 3100;
+
+    constexpr COLORREF kWindowBackground = RGB(18, 24, 33);
+    constexpr COLORREF kToolbarSurface = RGB(31, 39, 52);
+    constexpr COLORREF kToolbarPanel = RGB(42, 53, 69);
+    constexpr COLORREF kCanvasBackground = RGB(12, 18, 26);
+    constexpr COLORREF kCanvasPanel = RGB(28, 36, 49);
+    constexpr COLORREF kCanvasBorder = RGB(74, 90, 112);
+    constexpr COLORREF kTextColor = RGB(230, 236, 244);
+    constexpr COLORREF kMutedTextColor = RGB(154, 168, 188);
+    constexpr COLORREF kAccentColor = RGB(82, 146, 230);
+    constexpr COLORREF kAccentHotColor = RGB(103, 165, 247);
+    constexpr COLORREF kAccentPressedColor = RGB(60, 120, 200);
+    constexpr COLORREF kControlSurface = RGB(56, 68, 88);
+    constexpr COLORREF kControlSurfaceHot = RGB(67, 80, 101);
+    constexpr COLORREF kControlSurfacePressed = RGB(75, 90, 114);
+    constexpr COLORREF kControlBorder = RGB(86, 103, 128);
+    constexpr COLORREF kDangerSurface = RGB(85, 53, 62);
+    constexpr COLORREF kDangerSurfaceHot = RGB(101, 63, 74);
+    constexpr COLORREF kDangerSurfacePressed = RGB(119, 74, 86);
+    constexpr wchar_t kUiHoverProp[] = L"OneShot.UiHover";
+
+#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
+#define DWMWA_USE_IMMERSIVE_DARK_MODE 20
+#endif
+#ifndef DWMWA_WINDOW_CORNER_PREFERENCE
+#define DWMWA_WINDOW_CORNER_PREFERENCE 33
+#endif
+
+    enum class PromptAction
+    {
+        Neutral,
+        Accent
+    };
+
+    struct ToolbarLayout
+    {
+        RECT toolsGroup{};
+        RECT optionsGroup{};
+        RECT actionsGroup{};
+    };
+
 
     RECT MakeRect(int left, int top, int right, int bottom)
     {
@@ -50,10 +95,152 @@ namespace
         return rect;
     }
 
+    RECT MakeSizedRect(int left, int top, int width, int height)
+    {
+        return MakeRect(left, top, left + width, top + height);
+    }
+
+    int ScaleForDpi(int value, UINT dpi)
+    {
+        return MulDiv(value, static_cast<int>(dpi == 0 ? 96 : dpi), 96);
+    }
+
+    bool IsWindowHovering(HWND hwnd)
+    {
+        return GetPropW(hwnd, kUiHoverProp) != nullptr;
+    }
+
+    void SetWindowHover(HWND hwnd, bool hover)
+    {
+        if (hover)
+        {
+            SetPropW(hwnd, kUiHoverProp, reinterpret_cast<HANDLE>(1));
+        }
+        else
+        {
+            RemovePropW(hwnd, kUiHoverProp);
+        }
+    }
+
+    void ApplyModernWindowFrame(HWND hwnd)
+    {
+        if (!hwnd)
+        {
+            return;
+        }
+
+        const BOOL enabled = TRUE;
+        const DWM_WINDOW_CORNER_PREFERENCE preference = DWMWCP_ROUND;
+        (void)DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &enabled, sizeof(enabled));
+        (void)DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &preference, sizeof(preference));
+    }
+
+    HFONT CreateUiFont(HWND hwnd, int pointSize, int weight = FW_NORMAL)
+    {
+        const UINT dpi = hwnd ? GetDpiForWindow(hwnd) : 96;
+        const int height = -MulDiv(pointSize, static_cast<int>(dpi == 0 ? 96 : dpi), 72);
+        return CreateFontW(
+            height,
+            0,
+            0,
+            0,
+            weight,
+            FALSE,
+            FALSE,
+            FALSE,
+            DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY,
+            DEFAULT_PITCH | FF_DONTCARE,
+            L"Segoe UI");
+    }
+
+    void FillRoundedRect(HDC dc, const RECT& rect, COLORREF color, int radius)
+    {
+        HBRUSH brush = CreateSolidBrush(color);
+        HRGN region = CreateRoundRectRgn(rect.left, rect.top, rect.right + 1, rect.bottom + 1, radius, radius);
+        FillRgn(dc, region, brush);
+        DeleteObject(region);
+        DeleteObject(brush);
+    }
+
+    void FrameRoundedRect(HDC dc, const RECT& rect, COLORREF color, int radius, int thickness = 1)
+    {
+        HPEN pen = CreatePen(PS_SOLID, thickness, color);
+        HGDIOBJ oldPen = SelectObject(dc, pen);
+        HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
+        RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, radius, radius);
+        SelectObject(dc, oldBrush);
+        SelectObject(dc, oldPen);
+        DeleteObject(pen);
+    }
+
+    void DrawToolbarPanel(HDC dc, const RECT& rect, const wchar_t* label)
+    {
+        FillRoundedRect(dc, rect, kToolbarPanel, 18);
+        FrameRoundedRect(dc, rect, kControlBorder, 18);
+
+        RECT labelRect = rect;
+        labelRect.left += 14;
+        labelRect.top += 8;
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, kMutedTextColor);
+        DrawTextW(dc, label, -1, &labelRect, DT_LEFT | DT_TOP | DT_SINGLELINE);
+    }
+
+    ToolbarLayout BuildToolbarLayout(HWND hwnd)
+    {
+        RECT client{};
+        GetClientRect(hwnd, &client);
+        const UINT dpi = GetDpiForWindow(hwnd);
+        const int margin = ScaleForDpi(12, dpi);
+        const int top = ScaleForDpi(16, dpi);
+        const int bottom = top + ScaleForDpi(kToolbarGroupHeight, dpi);
+        ToolbarLayout layout{};
+        layout.toolsGroup = MakeRect(margin, top, margin + ScaleForDpi(470, dpi), bottom);
+        layout.optionsGroup = MakeRect(layout.toolsGroup.right + ScaleForDpi(12, dpi), top, layout.toolsGroup.right + ScaleForDpi(12, dpi) + ScaleForDpi(470, dpi), bottom);
+        layout.actionsGroup = MakeRect(client.right - margin - ScaleForDpi(300, dpi), top, client.right - margin, bottom);
+        return layout;
+    }
+
+
+    LRESULT CALLBACK ThemedButtonProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR)
+    {
+        switch (message)
+        {
+        case WM_MOUSEMOVE:
+            if (!IsWindowHovering(hwnd))
+            {
+                TRACKMOUSEEVENT track{};
+                track.cbSize = sizeof(track);
+                track.dwFlags = TME_LEAVE;
+                track.hwndTrack = hwnd;
+                TrackMouseEvent(&track);
+                SetWindowHover(hwnd, true);
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            break;
+        case WM_MOUSELEAVE:
+            SetWindowHover(hwnd, false);
+            InvalidateRect(hwnd, nullptr, FALSE);
+            break;
+        case WM_NCDESTROY:
+            RemoveWindowSubclass(hwnd, ThemedButtonProc, 0);
+            RemovePropW(hwnd, kUiHoverProp);
+            break;
+        default:
+            break;
+        }
+
+        return DefSubclassProc(hwnd, message, wParam, lParam);
+    }
+
     struct TextPromptState
     {
         HWND hwnd{nullptr};
         HWND edit{nullptr};
+        HFONT uiFont{nullptr};
         bool finished{false};
         bool accepted{false};
         std::wstring value;
@@ -100,6 +287,8 @@ namespace oneshot
         double middlePanOffsetX{0.0};
         double middlePanOffsetY{0.0};
         std::wstring fontFace{L"Segoe UI"};
+        HFONT uiFont{nullptr};
+        HFONT uiBoldFont{nullptr};
         HDC canvasBackBufferDc{nullptr};
         HBITMAP canvasBackBufferBitmap{nullptr};
         HGDIOBJ canvasBackBufferOldBitmap{nullptr};
@@ -384,6 +573,309 @@ namespace oneshot
         }
     }
 
+    static std::vector<int> GetMarkupButtonIds()
+    {
+        return {
+            kToolPenId, kToolLineId, kToolArrowId, kToolRectId, kToolEllipseId, kToolPolygonId, kToolTextId,
+            kStrokeColorId, kFillColorId, kTextColorId, kFillToggleId, kThicknessDownId, kThicknessUpId,
+            kFontDownId, kFontUpId, kFitId, kUndoId, kRedoId, kCopyId, kDoneId, kCancelId,
+            kPromptOkId, kPromptCancelId
+        };
+    }
+
+    static void ConfigureThemedButton(HWND button)
+    {
+        if (!button)
+        {
+            return;
+        }
+
+        LONG_PTR style = GetWindowLongPtrW(button, GWL_STYLE);
+        style &= ~(BS_TYPEMASK);
+        style |= BS_OWNERDRAW;
+        SetWindowLongPtrW(button, GWL_STYLE, style);
+        SetWindowSubclass(button, ThemedButtonProc, 0, 0);
+        InvalidateRect(button, nullptr, TRUE);
+    }
+
+    static void ApplyToolbarFonts(MarkupEditorWindow::State& state)
+    {
+        if (!state.hwnd)
+        {
+            return;
+        }
+
+        if (state.uiFont)
+        {
+            DeleteObject(state.uiFont);
+        }
+        if (state.uiBoldFont)
+        {
+            DeleteObject(state.uiBoldFont);
+        }
+
+        state.uiFont = CreateUiFont(state.hwnd, 10);
+        state.uiBoldFont = CreateUiFont(state.hwnd, 10, FW_SEMIBOLD);
+
+        for (const int id : GetMarkupButtonIds())
+        {
+            HWND control = GetDlgItem(state.hwnd, id);
+            if (!control)
+            {
+                continue;
+            }
+
+            SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(state.uiFont), TRUE);
+            ConfigureThemedButton(control);
+        }
+
+        if (state.fontCombo)
+        {
+            SendMessageW(state.fontCombo, WM_SETFONT, reinterpret_cast<WPARAM>(state.uiFont), TRUE);
+        }
+    }
+
+    static void LayoutToolbarControls(MarkupEditorWindow::State& state)
+    {
+        if (!state.hwnd)
+        {
+            return;
+        }
+
+        const UINT dpi = GetDpiForWindow(state.hwnd);
+        const ToolbarLayout toolbar = BuildToolbarLayout(state.hwnd);
+        const int buttonTop = toolbar.toolsGroup.top + ScaleForDpi(18, dpi);
+        const int buttonHeight = ScaleForDpi(24, dpi);
+        const int buttonGap = ScaleForDpi(6, dpi);
+        int left = toolbar.toolsGroup.left + ScaleForDpi(12, dpi);
+
+        const auto placeButton = [&](int id, int width)
+        {
+            HWND control = GetDlgItem(state.hwnd, id);
+            if (!control)
+            {
+                return;
+            }
+
+            MoveWindow(control, left, buttonTop, ScaleForDpi(width, dpi), buttonHeight, TRUE);
+            left += ScaleForDpi(width, dpi) + buttonGap;
+        };
+
+        placeButton(kToolPenId, 54);
+        placeButton(kToolLineId, 54);
+        placeButton(kToolArrowId, 60);
+        placeButton(kToolRectId, 54);
+        placeButton(kToolEllipseId, 68);
+        placeButton(kToolPolygonId, 56);
+        placeButton(kToolTextId, 54);
+
+        left = toolbar.optionsGroup.left + ScaleForDpi(12, dpi);
+        placeButton(kStrokeColorId, 76);
+        placeButton(kFillColorId, 62);
+        placeButton(kTextColorId, 66);
+        placeButton(kFillToggleId, 52);
+        placeButton(kThicknessDownId, 40);
+        placeButton(kThicknessUpId, 40);
+        placeButton(kFontDownId, 40);
+        placeButton(kFontUpId, 40);
+        placeButton(kFitId, 46);
+
+        HWND combo = state.fontCombo;
+        if (combo)
+        {
+            MoveWindow(combo, toolbar.actionsGroup.left + ScaleForDpi(12, dpi), buttonTop, ScaleForDpi(148, dpi), ScaleForDpi(280, dpi), TRUE);
+        }
+
+        int right = toolbar.actionsGroup.right - ScaleForDpi(12, dpi);
+        const auto placeActionButton = [&](int id, int width)
+        {
+            HWND control = GetDlgItem(state.hwnd, id);
+            if (!control)
+            {
+                return;
+            }
+
+            const int scaledWidth = ScaleForDpi(width, dpi);
+            right -= scaledWidth;
+            MoveWindow(control, right, buttonTop, scaledWidth, buttonHeight, TRUE);
+            right -= buttonGap;
+        };
+
+        placeActionButton(kCancelId, 66);
+        placeActionButton(kDoneId, 58);
+        placeActionButton(kCopyId, 58);
+        placeActionButton(kRedoId, 58);
+        placeActionButton(kUndoId, 58);
+
+        if (state.canvas)
+        {
+            const int canvasTop = toolbar.toolsGroup.bottom + ScaleForDpi(16, dpi);
+            RECT client{};
+            GetClientRect(state.hwnd, &client);
+            MoveWindow(state.canvas, ScaleForDpi(12, dpi), canvasTop, client.right - ScaleForDpi(24, dpi), client.bottom - canvasTop - ScaleForDpi(12, dpi), TRUE);
+        }
+    }
+
+    static void DrawButtonText(HDC dc, const RECT& rect, const std::wstring& text, COLORREF color)
+    {
+        RECT textRect = rect;
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, color);
+        DrawTextW(dc, text.c_str(), static_cast<int>(text.size()), &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    }
+
+    static std::wstring FormatColorLabel(const wchar_t* label, COLORREF color)
+    {
+        wchar_t buffer[64]{};
+        swprintf_s(buffer, L"%ls #%02X%02X%02X", label, GetRValue(color), GetGValue(color), GetBValue(color));
+        return buffer;
+    }
+
+    static void DrawColorSwatch(HDC dc, const RECT& rect, COLORREF color)
+    {
+        RECT swatch = rect;
+        swatch.left += 8;
+        swatch.top += 6;
+        swatch.bottom -= 6;
+        swatch.right = swatch.left + (swatch.bottom - swatch.top);
+        FillRoundedRect(dc, swatch, color, 8);
+        FrameRoundedRect(dc, swatch, RGB(230, 236, 244), 8);
+    }
+
+    static void DrawThemedButton(const MarkupEditorWindow::State& state, const DRAWITEMSTRUCT& draw)
+    {
+        RECT rect = draw.rcItem;
+        const bool hover = IsWindowHovering(draw.hwndItem) || (draw.itemState & ODS_HOTLIGHT) != 0;
+        const bool pressed = (draw.itemState & ODS_SELECTED) != 0;
+        const bool disabled = (draw.itemState & ODS_DISABLED) != 0;
+        const bool focused = (draw.itemState & ODS_FOCUS) != 0;
+        const bool checked = SendMessageW(draw.hwndItem, BM_GETCHECK, 0, 0) == BST_CHECKED;
+
+        COLORREF background = kControlSurface;
+        COLORREF border = kControlBorder;
+        COLORREF text = kTextColor;
+
+        if (draw.CtlID == kDoneId || draw.CtlID == kPromptOkId)
+        {
+            background = kAccentColor;
+            border = kAccentHotColor;
+        }
+        else if (draw.CtlID == kCancelId)
+        {
+            background = kDangerSurface;
+            border = kDangerSurfaceHot;
+        }
+        else if (checked)
+        {
+            background = kAccentColor;
+            border = kAccentHotColor;
+        }
+
+        if (hover)
+        {
+            if (draw.CtlID == kCancelId)
+            {
+                background = kDangerSurfaceHot;
+            }
+            else if (checked || draw.CtlID == kDoneId || draw.CtlID == kPromptOkId)
+            {
+                background = kAccentHotColor;
+            }
+            else
+            {
+                background = kControlSurfaceHot;
+            }
+        }
+
+        if (pressed)
+        {
+            if (draw.CtlID == kCancelId)
+            {
+                background = kDangerSurfacePressed;
+            }
+            else if (checked || draw.CtlID == kDoneId || draw.CtlID == kPromptOkId)
+            {
+                background = kAccentPressedColor;
+            }
+            else
+            {
+                background = kControlSurfacePressed;
+            }
+        }
+
+        if (disabled)
+        {
+            background = RGB(46, 54, 67);
+            text = RGB(122, 132, 147);
+        }
+
+        FillRoundedRect(draw.hDC, rect, background, 14);
+        FrameRoundedRect(draw.hDC, rect, border, 14);
+
+        std::wstring label;
+        if (draw.CtlID == kStrokeColorId)
+        {
+            DrawColorSwatch(draw.hDC, rect, state.strokeColor);
+            label = FormatColorLabel(L"Stroke", state.strokeColor);
+        }
+        else if (draw.CtlID == kFillColorId)
+        {
+            DrawColorSwatch(draw.hDC, rect, state.fillColor);
+            label = FormatColorLabel(L"Fill", state.fillColor);
+        }
+        else if (draw.CtlID == kTextColorId)
+        {
+            DrawColorSwatch(draw.hDC, rect, state.fontColor);
+            label = FormatColorLabel(L"Text", state.fontColor);
+        }
+        else if (draw.CtlID == kFillToggleId)
+        {
+            label = state.fillShapes ? L"Fill On" : L"Fill Off";
+        }
+        else if (draw.CtlID == kThicknessDownId)
+        {
+            label = L"T-";
+        }
+        else if (draw.CtlID == kThicknessUpId)
+        {
+            label = L"T+";
+        }
+        else if (draw.CtlID == kFontDownId)
+        {
+            label = L"F-";
+        }
+        else if (draw.CtlID == kFontUpId)
+        {
+            label = L"F+";
+        }
+        else
+        {
+            wchar_t buffer[128]{};
+            GetWindowTextW(draw.hwndItem, buffer, static_cast<int>(std::size(buffer)));
+            label = buffer;
+        }
+
+        if (draw.CtlID == kStrokeColorId || draw.CtlID == kFillColorId || draw.CtlID == kTextColorId)
+        {
+            RECT textRect = rect;
+            textRect.left += 30;
+            SetBkMode(draw.hDC, TRANSPARENT);
+            SetTextColor(draw.hDC, text);
+            DrawTextW(draw.hDC, label.c_str(), static_cast<int>(label.size()), &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        }
+        else
+        {
+            DrawButtonText(draw.hDC, rect, label, text);
+        }
+
+        if (focused)
+        {
+            RECT focusRect = rect;
+            InflateRect(&focusRect, -4, -4);
+            DrawFocusRect(draw.hDC, &focusRect);
+        }
+    }
+
     static LRESULT CALLBACK TextPromptProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
     {
         auto* state = reinterpret_cast<TextPromptState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -405,12 +897,64 @@ namespace oneshot
         switch (message)
         {
         case WM_CREATE:
-            state->edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"Edit", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | WS_TABSTOP, 12, 14, 300, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kPromptEditId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"OK", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON | WS_TABSTOP, 154, 50, 76, 26, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kPromptOkId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Cancel", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | WS_TABSTOP, 236, 50, 76, 26, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kPromptCancelId)), GetModuleHandleW(nullptr), nullptr);
-            SendMessageW(state->edit, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
+            ApplyModernWindowFrame(hwnd);
+            state->edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"Edit", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | WS_TABSTOP, 16, 20, 316, 28, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kPromptEditId)), GetModuleHandleW(nullptr), nullptr);
+            {
+                HWND ok = CreateWindowExW(0, L"Button", L"Insert", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON | WS_TABSTOP, 168, 64, 78, 30, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kPromptOkId)), GetModuleHandleW(nullptr), nullptr);
+                HWND cancel = CreateWindowExW(0, L"Button", L"Cancel", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | WS_TABSTOP, 254, 64, 78, 30, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kPromptCancelId)), GetModuleHandleW(nullptr), nullptr);
+                state->uiFont = CreateUiFont(hwnd, 10);
+                SendMessageW(state->edit, WM_SETFONT, reinterpret_cast<WPARAM>(state->uiFont), TRUE);
+                SendMessageW(ok, WM_SETFONT, reinterpret_cast<WPARAM>(state->uiFont), TRUE);
+                SendMessageW(cancel, WM_SETFONT, reinterpret_cast<WPARAM>(state->uiFont), TRUE);
+                ConfigureThemedButton(ok);
+                ConfigureThemedButton(cancel);
+            }
             SetFocus(state->edit);
             return 0;
+        case WM_ERASEBKGND:
+            return TRUE;
+        case WM_CTLCOLORSTATIC:
+        case WM_CTLCOLOREDIT:
+        {
+            HDC dc = reinterpret_cast<HDC>(wParam);
+            SetBkColor(dc, kToolbarSurface);
+            SetTextColor(dc, kTextColor);
+            static HBRUSH brush = CreateSolidBrush(kToolbarSurface);
+            return reinterpret_cast<INT_PTR>(brush);
+        }
+        case WM_DRAWITEM:
+        {
+            auto* draw = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
+            if (!draw)
+            {
+                break;
+            }
+
+            MarkupEditorWindow::State fakeState{};
+            fakeState.strokeColor = kAccentColor;
+            fakeState.fillColor = RGB(120, 156, 204);
+            fakeState.fontColor = kTextColor;
+            DrawThemedButton(fakeState, *draw);
+            return TRUE;
+        }
+        case WM_PAINT:
+        {
+            PAINTSTRUCT paint{};
+            HDC dc = BeginPaint(hwnd, &paint);
+            RECT client{};
+            GetClientRect(hwnd, &client);
+            HBRUSH brush = CreateSolidBrush(kWindowBackground);
+            FillRect(dc, &client, brush);
+            DeleteObject(brush);
+            RECT labelRect = client;
+            labelRect.left = 18;
+            labelRect.top = 8;
+            SetBkMode(dc, TRANSPARENT);
+            SetTextColor(dc, kMutedTextColor);
+            DrawTextW(dc, L"Add annotation text", -1, &labelRect, DT_LEFT | DT_TOP | DT_SINGLELINE);
+            EndPaint(hwnd, &paint);
+            return 0;
+        }
         case WM_COMMAND:
             switch (LOWORD(wParam))
             {
@@ -436,6 +980,13 @@ namespace oneshot
             state->finished = true;
             DestroyWindow(hwnd);
             return 0;
+        case WM_DESTROY:
+            if (state->uiFont)
+            {
+                DeleteObject(state->uiFont);
+                state->uiFont = nullptr;
+            }
+            return 0;
         default:
             break;
         }
@@ -450,7 +1001,6 @@ namespace oneshot
         windowClass.hInstance = GetModuleHandleW(nullptr);
         windowClass.lpszClassName = L"OneShotNative.TextPrompt";
         windowClass.hCursor = LoadCursorW(nullptr, IDC_IBEAM);
-        windowClass.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
         RegisterClassW(&windowClass);
 
         RECT ownerRect{};
@@ -465,10 +1015,10 @@ namespace oneshot
             windowClass.lpszClassName,
             L"Add Text",
             WS_CAPTION | WS_POPUPWINDOW | WS_VISIBLE,
-            ownerRect.left + std::max(0L, ((ownerRect.right - ownerRect.left) - 324L) / 2L),
-            ownerRect.top + std::max(0L, ((ownerRect.bottom - ownerRect.top) - 100L) / 2L),
-            324,
-            100,
+            ownerRect.left + std::max(0L, ((ownerRect.right - ownerRect.left) - 356L) / 2L),
+            ownerRect.top + std::max(0L, ((ownerRect.bottom - ownerRect.top) - 116L) / 2L),
+            356,
+            116,
             owner,
             nullptr,
             GetModuleHandleW(nullptr),
@@ -730,11 +1280,29 @@ namespace oneshot
             targetDc = state.canvasBackBufferDc;
         }
 
-        FillRect(targetDc, &client, static_cast<HBRUSH>(GetStockObject(DKGRAY_BRUSH)));
+        HBRUSH backgroundBrush = CreateSolidBrush(kCanvasBackground);
+        FillRect(targetDc, &client, backgroundBrush);
+        DeleteObject(backgroundBrush);
+
+        for (int y = 24; y < client.bottom; y += 24)
+        {
+            for (int x = 24; x < client.right; x += 24)
+            {
+                SetPixel(targetDc, x, y, RGB(26, 34, 47));
+            }
+        }
 
         ClampViewportOffsets(state);
         state.imageRect = ComputeImageRect(state);
         RECT canvasRect = state.imageRect;
+        RECT panelRect = canvasRect;
+        InflateRect(&panelRect, 10, 10);
+
+        RECT shadowRect = panelRect;
+        OffsetRect(&shadowRect, 6, 8);
+        FillRoundedRect(targetDc, shadowRect, RGB(10, 14, 21), 20);
+        FillRoundedRect(targetDc, panelRect, kCanvasPanel, 20);
+        FrameRoundedRect(targetDc, panelRect, kCanvasBorder, 20);
 
         HDC memoryDc = CreateCompatibleDC(targetDc);
         HGDIOBJ previous = SelectObject(memoryDc, state.currentImage.bitmap);
@@ -754,7 +1322,7 @@ namespace oneshot
         SelectObject(memoryDc, previous);
         DeleteDC(memoryDc);
 
-        FrameRect(targetDc, &canvasRect, static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+        FrameRoundedRect(targetDc, canvasRect, RGB(220, 228, 240), 12);
 
         if (state.tool == MarkupEditorWindow::Tool::Polygon && state.polygonInProgress)
         {
@@ -825,7 +1393,6 @@ namespace oneshot
         windowClass.hInstance = GetModuleHandleW(nullptr);
         windowClass.lpszClassName = L"OneShotNative.MarkupEditor";
         windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-        windowClass.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
         RegisterClassW(&windowClass);
 
         WNDCLASSW canvasClass{};
@@ -833,7 +1400,6 @@ namespace oneshot
         canvasClass.hInstance = GetModuleHandleW(nullptr);
         canvasClass.lpszClassName = L"OneShotNative.MarkupCanvas";
         canvasClass.hCursor = LoadCursorW(nullptr, IDC_CROSS);
-        canvasClass.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
         RegisterClassW(&canvasClass);
 
         State state{};
@@ -864,6 +1430,7 @@ namespace oneshot
             return std::nullopt;
         }
 
+        ApplyModernWindowFrame(window);
         ShowWindow(window, SW_SHOW);
         UpdateWindow(window);
 
@@ -899,31 +1466,36 @@ namespace oneshot
 
         switch (message)
         {
+        case WM_ERASEBKGND:
+            return TRUE;
         case WM_CREATE:
-            CreateWindowExW(0, L"Button", L"Pen", WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON, 8, 8, 70, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kToolPenId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Line", WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON, 82, 8, 70, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kToolLineId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Arrow", WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON, 156, 8, 70, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kToolArrowId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Rect", WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON, 230, 8, 70, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kToolRectId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Ellipse", WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON, 304, 8, 70, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kToolEllipseId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Poly", WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON, 378, 8, 56, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kToolPolygonId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Text", WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON, 438, 8, 56, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kToolTextId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Stroke", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 498, 8, 56, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kStrokeColorId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"FillClr", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 558, 8, 58, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFillColorId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"TextClr", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 620, 8, 58, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTextColorId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Fill", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 682, 8, 42, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFillToggleId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"T-", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 728, 8, 30, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kThicknessDownId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"T+", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 762, 8, 30, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kThicknessUpId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"F-", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 796, 8, 30, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFontDownId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"F+", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 830, 8, 30, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFontUpId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Fit", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 864, 8, 40, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFitId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Undo", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 908, 8, 48, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kUndoId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Redo", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 960, 8, 48, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kRedoId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Copy", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 1012, 8, 48, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCopyId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Done", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 1064, 8, 48, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDoneId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Cancel", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 1116, 8, 58, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCancelId)), GetModuleHandleW(nullptr), nullptr);
-            state->fontCombo = CreateWindowExW(0, L"ComboBox", nullptr, WS_CHILD | WS_VISIBLE | WS_VSCROLL | CBS_DROPDOWNLIST, 1178, 8, 150, 320, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFontComboId)), GetModuleHandleW(nullptr), nullptr);
-            state->canvas = CreateWindowExW(0, L"OneShotNative.MarkupCanvas", L"", WS_CHILD | WS_VISIBLE, 0, kToolbarHeight, 100, 100, hwnd, nullptr, GetModuleHandleW(nullptr), state);
+            ApplyModernWindowFrame(hwnd);
+            CreateWindowExW(0, L"Button", L"Pen", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kToolPenId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Line", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kToolLineId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Arrow", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kToolArrowId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Rect", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kToolRectId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Ellipse", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kToolEllipseId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Poly", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kToolPolygonId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Text", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kToolTextId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Stroke", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kStrokeColorId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Fill", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFillColorId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Text", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTextColorId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Fill", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFillToggleId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"T-", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kThicknessDownId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"T+", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kThicknessUpId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"F-", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFontDownId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"F+", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFontUpId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Fit", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFitId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Undo", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kUndoId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Redo", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kRedoId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Copy", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCopyId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Done", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDoneId)), GetModuleHandleW(nullptr), nullptr);
+            CreateWindowExW(0, L"Button", L"Cancel", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCancelId)), GetModuleHandleW(nullptr), nullptr);
+            state->fontCombo = CreateWindowExW(0, L"ComboBox", nullptr, WS_CHILD | WS_VISIBLE | WS_VSCROLL | CBS_DROPDOWNLIST | WS_TABSTOP, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFontComboId)), GetModuleHandleW(nullptr), nullptr);
+            state->canvas = CreateWindowExW(0, L"OneShotNative.MarkupCanvas", L"", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, hwnd, nullptr, GetModuleHandleW(nullptr), state);
             PopulateFontCombo(state->fontCombo, state->fontFace);
+            ApplyToolbarFonts(*state);
+            LayoutToolbarControls(*state);
             FitImageToViewport(*state);
             UpdateToolButtons(*state);
             CheckDlgButton(hwnd, kFillToggleId, BST_CHECKED);
@@ -931,21 +1503,41 @@ namespace oneshot
         case WM_SIZE:
             if (state->canvas)
             {
-                MoveWindow(state->canvas, 0, kToolbarHeight, LOWORD(lParam), HIWORD(lParam) - kToolbarHeight, TRUE);
+                LayoutToolbarControls(*state);
                 UpdateZoomBounds(*state, true);
                 InvalidateCanvas(*state);
             }
             return 0;
+        case WM_CTLCOLORSTATIC:
+        case WM_CTLCOLOREDIT:
+        {
+            HDC dc = reinterpret_cast<HDC>(wParam);
+            SetBkColor(dc, kToolbarPanel);
+            SetTextColor(dc, kTextColor);
+            static HBRUSH brush = CreateSolidBrush(kToolbarPanel);
+            return reinterpret_cast<INT_PTR>(brush);
+        }
+        case WM_DRAWITEM:
+        {
+            auto* draw = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
+            if (!draw)
+            {
+                break;
+            }
+
+            DrawThemedButton(*state, *draw);
+            return TRUE;
+        }
         case WM_COMMAND:
             switch (LOWORD(wParam))
             {
-            case kToolPenId: state->tool = Tool::Pen; UpdateToolButtons(*state); return 0;
-            case kToolLineId: state->tool = Tool::Line; UpdateToolButtons(*state); return 0;
-            case kToolArrowId: state->tool = Tool::Arrow; UpdateToolButtons(*state); return 0;
-            case kToolRectId: state->tool = Tool::Rectangle; UpdateToolButtons(*state); return 0;
-            case kToolEllipseId: state->tool = Tool::Ellipse; UpdateToolButtons(*state); return 0;
-            case kToolPolygonId: state->tool = Tool::Polygon; UpdateToolButtons(*state); return 0;
-            case kToolTextId: state->tool = Tool::Text; UpdateToolButtons(*state); return 0;
+            case kToolPenId: state->tool = Tool::Pen; UpdateToolButtons(*state); InvalidateRect(hwnd, nullptr, FALSE); return 0;
+            case kToolLineId: state->tool = Tool::Line; UpdateToolButtons(*state); InvalidateRect(hwnd, nullptr, FALSE); return 0;
+            case kToolArrowId: state->tool = Tool::Arrow; UpdateToolButtons(*state); InvalidateRect(hwnd, nullptr, FALSE); return 0;
+            case kToolRectId: state->tool = Tool::Rectangle; UpdateToolButtons(*state); InvalidateRect(hwnd, nullptr, FALSE); return 0;
+            case kToolEllipseId: state->tool = Tool::Ellipse; UpdateToolButtons(*state); InvalidateRect(hwnd, nullptr, FALSE); return 0;
+            case kToolPolygonId: state->tool = Tool::Polygon; UpdateToolButtons(*state); InvalidateRect(hwnd, nullptr, FALSE); return 0;
+            case kToolTextId: state->tool = Tool::Text; UpdateToolButtons(*state); InvalidateRect(hwnd, nullptr, FALSE); return 0;
             case kUndoId:
                 if (!state->undoStack.empty())
                 {
@@ -956,6 +1548,7 @@ namespace oneshot
                     HBITMAP snapshot = state->undoStack.back();
                     state->undoStack.pop_back();
                     RestoreBitmap(*state, snapshot);
+                    InvalidateRect(hwnd, nullptr, FALSE);
                     InvalidateCanvas(*state);
                 }
                 return 0;
@@ -969,6 +1562,7 @@ namespace oneshot
                     HBITMAP snapshot = state->redoStack.back();
                     state->redoStack.pop_back();
                     RestoreBitmap(*state, snapshot);
+                    InvalidateRect(hwnd, nullptr, FALSE);
                     InvalidateCanvas(*state);
                 }
                 return 0;
@@ -980,39 +1574,48 @@ namespace oneshot
             }
             case kStrokeColorId:
                 ChooseEditorColor(hwnd, state->strokeColor, state->customColors);
+                InvalidateRect(hwnd, nullptr, FALSE);
                 InvalidateCanvas(*state);
                 return 0;
             case kFillColorId:
                 ChooseEditorColor(hwnd, state->fillColor, state->customColors);
+                InvalidateRect(hwnd, nullptr, FALSE);
                 InvalidateCanvas(*state);
                 return 0;
             case kTextColorId:
                 ChooseEditorColor(hwnd, state->fontColor, state->customColors);
+                InvalidateRect(hwnd, nullptr, FALSE);
                 InvalidateCanvas(*state);
                 return 0;
             case kFillToggleId:
                 state->fillShapes = IsDlgButtonChecked(hwnd, kFillToggleId) == BST_CHECKED;
+                InvalidateRect(hwnd, nullptr, FALSE);
                 InvalidateCanvas(*state);
                 return 0;
             case kThicknessDownId:
                 state->thickness = std::max(1, state->thickness - 1);
+                InvalidateRect(hwnd, nullptr, FALSE);
                 InvalidateCanvas(*state);
                 return 0;
             case kThicknessUpId:
                 state->thickness = std::min(16, state->thickness + 1);
+                InvalidateRect(hwnd, nullptr, FALSE);
                 InvalidateCanvas(*state);
                 return 0;
             case kFontDownId:
                 state->fontSize = std::max(8, state->fontSize - 2);
+                InvalidateRect(hwnd, nullptr, FALSE);
                 InvalidateCanvas(*state);
                 return 0;
             case kFontUpId:
                 state->fontSize = std::min(96, state->fontSize + 2);
+                InvalidateRect(hwnd, nullptr, FALSE);
                 InvalidateCanvas(*state);
                 return 0;
             case kFitId:
                 state->userAdjustedViewport = false;
                 FitImageToViewport(*state);
+                InvalidateRect(hwnd, nullptr, FALSE);
                 InvalidateCanvas(*state);
                 return 0;
             case kDoneId:
@@ -1036,6 +1639,7 @@ namespace oneshot
                     SendMessageW(state->fontCombo, CB_GETLBTEXT, selection, reinterpret_cast<LPARAM>(fontName));
                     state->fontFace = fontName;
                 }
+                InvalidateRect(hwnd, nullptr, FALSE);
                 return 0;
             }
             break;
@@ -1063,8 +1667,48 @@ namespace oneshot
                 }
             }
             break;
+        case WM_PAINT:
+        {
+            PAINTSTRUCT paint{};
+            HDC dc = BeginPaint(hwnd, &paint);
+            RECT client{};
+            GetClientRect(hwnd, &client);
+            HBRUSH backgroundBrush = CreateSolidBrush(kWindowBackground);
+            FillRect(dc, &client, backgroundBrush);
+            DeleteObject(backgroundBrush);
+
+            RECT toolbarRect = MakeRect(0, 0, client.right, BuildToolbarLayout(hwnd).toolsGroup.bottom + ScaleForDpi(16, GetDpiForWindow(hwnd)));
+            HBRUSH toolbarBrush = CreateSolidBrush(kToolbarSurface);
+            FillRect(dc, &toolbarRect, toolbarBrush);
+            DeleteObject(toolbarBrush);
+
+            const ToolbarLayout toolbar = BuildToolbarLayout(hwnd);
+            HFONT previousFont = static_cast<HFONT>(SelectObject(dc, state->uiBoldFont ? state->uiBoldFont : GetStockObject(DEFAULT_GUI_FONT)));
+            DrawToolbarPanel(dc, toolbar.toolsGroup, L"TOOLS");
+            DrawToolbarPanel(dc, toolbar.optionsGroup, L"STYLE");
+            DrawToolbarPanel(dc, toolbar.actionsGroup, L"ACTIONS");
+
+            RECT metaRect = MakeRect(18, toolbarRect.bottom - ScaleForDpi(22, GetDpiForWindow(hwnd)), client.right - 18, toolbarRect.bottom - ScaleForDpi(6, GetDpiForWindow(hwnd)));
+            SetBkMode(dc, TRANSPARENT);
+            SetTextColor(dc, kMutedTextColor);
+            std::wstring meta = L"Thickness " + std::to_wstring(state->thickness) + L"   Font " + std::to_wstring(state->fontSize) + L"pt   Ctrl+Wheel zoom   Middle mouse pan";
+            DrawTextW(dc, meta.c_str(), static_cast<int>(meta.size()), &metaRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            SelectObject(dc, previousFont);
+            EndPaint(hwnd, &paint);
+            return 0;
+        }
         case WM_DESTROY:
             ReleaseCanvasBackBuffer(*state);
+            if (state->uiFont)
+            {
+                DeleteObject(state->uiFont);
+                state->uiFont = nullptr;
+            }
+            if (state->uiBoldFont)
+            {
+                DeleteObject(state->uiBoldFont);
+                state->uiBoldFont = nullptr;
+            }
             return 0;
         default:
             break;

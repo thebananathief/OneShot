@@ -23,6 +23,7 @@ add_executable(oneshot WIN32
     src/StartupService.cpp
     src/TempFileManager.cpp
     src/TrayController.cpp
+    src/UiTheme.cpp
 )
 
 target_include_directories(oneshot PRIVATE include)
@@ -39,11 +40,15 @@ target_link_libraries(oneshot PRIVATE
     comctl32
     comdlg32
     gdi32
+    dwmapi
     msimg32
+    d2d1
+    dwrite
     windowscodecs
     ole32
     shell32
     shlwapi
+    uxtheme
     user32
     advapi32
 )
