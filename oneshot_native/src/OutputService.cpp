@@ -5,6 +5,12 @@
 
 namespace
 {
+    struct BitfieldsBitmapInfo
+    {
+        BITMAPINFOHEADER header{};
+        DWORD masks[3]{};
+    };
+
     struct PackedDib
     {
         HGLOBAL handle{nullptr};
@@ -64,6 +70,11 @@ namespace
             error = L"GetObjectW failed";
             return false;
         }
+        if (bitmapInfo.bmWidth <= 0 || bitmapInfo.bmHeight <= 0)
+        {
+            error = L"bitmap dimensions are invalid";
+            return false;
+        }
 
         BITMAPV5HEADER header{};
         header.bV5Size = sizeof(header);
@@ -119,17 +130,17 @@ namespace
             masks[2] = header.bV5BlueMask;
         }
 
-        BITMAPINFO info{};
-        info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-        info.bmiHeader.biWidth = header.bV5Width;
-        info.bmiHeader.biHeight = header.bV5Height;
-        info.bmiHeader.biPlanes = header.bV5Planes;
-        info.bmiHeader.biBitCount = header.bV5BitCount;
-        info.bmiHeader.biCompression = BI_BITFIELDS;
-        auto* masks = reinterpret_cast<DWORD*>(info.bmiColors);
-        masks[0] = header.bV5RedMask;
-        masks[1] = header.bV5GreenMask;
-        masks[2] = header.bV5BlueMask;
+        BitfieldsBitmapInfo info{};
+        info.header.biSize = sizeof(BITMAPINFOHEADER);
+        info.header.biWidth = header.bV5Width;
+        info.header.biHeight = header.bV5Height;
+        info.header.biPlanes = header.bV5Planes;
+        info.header.biBitCount = header.bV5BitCount;
+        info.header.biCompression = BI_BITFIELDS;
+        info.header.biSizeImage = static_cast<DWORD>(pixelBytes);
+        info.masks[0] = header.bV5RedMask;
+        info.masks[1] = header.bV5GreenMask;
+        info.masks[2] = header.bV5BlueMask;
 
         HDC screenDc = GetDC(nullptr);
         if (!screenDc)
@@ -139,7 +150,14 @@ namespace
             return false;
         }
 
-        const int rows = GetDIBits(screenDc, bitmap, 0, static_cast<UINT>(bitmapInfo.bmHeight), pixelData, &info, DIB_RGB_COLORS);
+        const int rows = GetDIBits(
+            screenDc,
+            bitmap,
+            0,
+            static_cast<UINT>(bitmapInfo.bmHeight),
+            pixelData,
+            reinterpret_cast<BITMAPINFO*>(&info),
+            DIB_RGB_COLORS);
         ReleaseDC(nullptr, screenDc);
         if (rows == 0)
         {
