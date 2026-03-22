@@ -475,11 +475,14 @@ namespace
 
     void InstallHooks(OverlaySession& session)
     {
-        g_activeSession = &session;
-        g_activeSessionId = session.sessionId;
-        session.active = true;
-        session.keyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, KeyboardHookProc, GetModuleHandleW(nullptr), 0);
-        session.mouseHook = SetWindowsHookExW(WH_MOUSE_LL, MouseHookProc, GetModuleHandleW(nullptr), 0);
+        if (!session.keyboardHook)
+        {
+            session.keyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, KeyboardHookProc, GetModuleHandleW(nullptr), 0);
+        }
+        if (!session.mouseHook)
+        {
+            session.mouseHook = SetWindowsHookExW(WH_MOUSE_LL, MouseHookProc, GetModuleHandleW(nullptr), 0);
+        }
     }
 
     LRESULT CALLBACK OverlayWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
@@ -664,6 +667,9 @@ namespace oneshot
         OverlaySession session{};
         session.sessionId = g_nextSessionId++;
         session.image = &image;
+        session.active = true;
+        g_activeSession = &session;
+        g_activeSessionId = session.sessionId;
         std::vector<std::unique_ptr<OverlayWindowState>> windowStates;
         windowStates.reserve(monitorBounds.size());
 
