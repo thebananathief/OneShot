@@ -1,4 +1,5 @@
 #include "oneshot_native/MarkupEditorWindow.h"
+#include "oneshot_native/UiTheme.h"
 
 #include <commctrl.h>
 #include <windowsx.h>
@@ -8,11 +9,11 @@
 
 namespace
 {
-    constexpr int kToolbarHeight = 84;
-    constexpr int kToolbarGroupHeight = 52;
+    constexpr int kToolbarHeight = 108;
+    constexpr int kToolbarGroupHeight = 64;
     constexpr int kMargin = 16;
     constexpr double kMaxZoom = 8.0;
-    constexpr double kFitPaddingFactor = 0.99;
+    constexpr double kFitPaddingFactor = 1.0;
     constexpr double kZoomStep = 1.1;
 
     constexpr int kToolPenId = 2001;
@@ -43,6 +44,12 @@ namespace
     constexpr int kPromptOkId = 3002;
     constexpr int kPromptCancelId = 3003;
     constexpr int kToolbarLabelId = 3100;
+    constexpr int kToolbarHeaderInsetY = 8;
+    constexpr int kToolbarButtonInsetY = 26;
+    constexpr int kToolbarBottomInset = 28;
+    constexpr int kActionButtonSize = 30;
+    constexpr int kActionButtonRadius = 14;
+    constexpr int kActionButtonFontPointSize = 13;
 
     constexpr COLORREF kWindowBackground = RGB(18, 24, 33);
     constexpr COLORREF kToolbarSurface = RGB(31, 39, 52);
@@ -63,6 +70,12 @@ namespace
     constexpr COLORREF kDangerSurfaceHot = RGB(101, 63, 74);
     constexpr COLORREF kDangerSurfacePressed = RGB(119, 74, 86);
     constexpr wchar_t kUiHoverProp[] = L"OneShot.UiHover";
+    constexpr wchar_t kActionGlyphFit[] = L"\uE9A6";
+    constexpr wchar_t kActionGlyphUndo[] = L"\uE7A7";
+    constexpr wchar_t kActionGlyphRedo[] = L"\uE7A6";
+    constexpr wchar_t kActionGlyphCopy[] = L"\uE8C8";
+    constexpr wchar_t kActionGlyphDone[] = L"\uE8FB";
+    constexpr wchar_t kActionGlyphCancel[] = L"\uE711";
 
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
@@ -176,6 +189,27 @@ namespace
             L"Segoe UI");
     }
 
+    HFONT CreateSymbolFont(HWND hwnd, int pointSize)
+    {
+        const UINT dpi = hwnd ? GetDpiForWindow(hwnd) : 96;
+        const int height = -MulDiv(pointSize, static_cast<int>(dpi == 0 ? 96 : dpi), 72);
+        return CreateFontW(
+            height,
+            0,
+            0,
+            0,
+            FW_NORMAL,
+            FALSE,
+            FALSE,
+            FALSE,
+            DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY,
+            DEFAULT_PITCH | FF_DONTCARE,
+            L"Segoe MDL2 Assets");
+    }
+
     void FillRoundedRect(HDC dc, const RECT& rect, COLORREF color, int radius)
     {
         HBRUSH brush = CreateSolidBrush(color);
@@ -203,7 +237,7 @@ namespace
 
         RECT labelRect = rect;
         labelRect.left += 14;
-        labelRect.top += 8;
+        labelRect.top += kToolbarHeaderInsetY;
         SetBkMode(dc, TRANSPARENT);
         SetTextColor(dc, kMutedTextColor);
         DrawTextW(dc, label, -1, &labelRect, DT_LEFT | DT_TOP | DT_SINGLELINE);
@@ -218,10 +252,68 @@ namespace
         const int top = ScaleForDpi(16, dpi);
         const int bottom = top + ScaleForDpi(kToolbarGroupHeight, dpi);
         ToolbarLayout layout{};
+        layout.actionsGroup = MakeRect(client.right - margin - ScaleForDpi(264, dpi), top, client.right - margin, bottom);
         layout.toolsGroup = MakeRect(margin, top, margin + ScaleForDpi(470, dpi), bottom);
-        layout.optionsGroup = MakeRect(layout.toolsGroup.right + ScaleForDpi(12, dpi), top, layout.toolsGroup.right + ScaleForDpi(12, dpi) + ScaleForDpi(470, dpi), bottom);
-        layout.actionsGroup = MakeRect(client.right - margin - ScaleForDpi(390, dpi), top, client.right - margin, bottom);
+        layout.optionsGroup = MakeRect(layout.toolsGroup.right + ScaleForDpi(12, dpi), top, layout.actionsGroup.left - ScaleForDpi(12, dpi), bottom);
         return layout;
+    }
+
+    bool IsActionButton(int id)
+    {
+        switch (id)
+        {
+        case kFitId:
+        case kUndoId:
+        case kRedoId:
+        case kCopyId:
+        case kDoneId:
+        case kCancelId:
+            return true;
+        default:
+            return false;
+        }
+    }
+
+    const wchar_t* GetActionButtonGlyph(int id)
+    {
+        switch (id)
+        {
+        case kFitId:
+            return kActionGlyphFit;
+        case kUndoId:
+            return kActionGlyphUndo;
+        case kRedoId:
+            return kActionGlyphRedo;
+        case kCopyId:
+            return kActionGlyphCopy;
+        case kDoneId:
+            return kActionGlyphDone;
+        case kCancelId:
+            return kActionGlyphCancel;
+        default:
+            return nullptr;
+        }
+    }
+
+    const wchar_t* GetActionButtonLabel(int id)
+    {
+        switch (id)
+        {
+        case kFitId:
+            return L"Fit";
+        case kUndoId:
+            return L"Undo";
+        case kRedoId:
+            return L"Redo";
+        case kCopyId:
+            return L"Copy";
+        case kDoneId:
+            return L"Done";
+        case kCancelId:
+            return L"Cancel";
+        default:
+            return L"";
+        }
     }
 
 
@@ -307,8 +399,10 @@ namespace oneshot
         POINT middlePanStart{};
         double middlePanOffsetX{0.0};
         double middlePanOffsetY{0.0};
+        HWND tooltip{nullptr};
         HFONT uiFont{nullptr};
         HFONT uiBoldFont{nullptr};
+        HFONT actionSymbolFont{nullptr};
         HDC canvasBackBufferDc{nullptr};
         HBITMAP canvasBackBufferBitmap{nullptr};
         HGDIOBJ canvasBackBufferOldBitmap{nullptr};
@@ -383,10 +477,6 @@ namespace oneshot
     {
         RECT client{};
         GetClientRect(hwnd, &client);
-        client.left += kMargin;
-        client.top += kMargin;
-        client.right -= kMargin;
-        client.bottom -= kMargin;
         return client;
     }
 
@@ -598,6 +688,8 @@ namespace oneshot
             SendMessageW(combo, CB_SETCURSEL, 0, 0);
         }
     }
+
+    static std::vector<int> GetMarkupButtonIds();
 
     static StrokeToolSettings& GetStrokeSettings(MarkupEditorWindow::State& state, MarkupEditorWindow::Tool tool)
     {
@@ -848,6 +940,55 @@ namespace oneshot
         }
     }
 
+    static void ApplyToolbarButtonRegions(const MarkupEditorWindow::State& state, int buttonRadius)
+    {
+        if (!state.hwnd)
+        {
+            return;
+        }
+
+        for (const int id : GetMarkupButtonIds())
+        {
+            HWND control = GetDlgItem(state.hwnd, id);
+            if (control)
+            {
+                oneshot::ui::ApplyRoundedWindowRegion(control, buttonRadius);
+            }
+        }
+    }
+
+    static void ConfigureActionTooltips(MarkupEditorWindow::State& state)
+    {
+        if (!state.tooltip)
+        {
+            return;
+        }
+
+        const auto addTool = [&state](int id)
+        {
+            HWND control = GetDlgItem(state.hwnd, id);
+            if (!control)
+            {
+                return;
+            }
+
+            TOOLINFOW tool{};
+            tool.cbSize = sizeof(tool);
+            tool.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+            tool.hwnd = state.hwnd;
+            tool.uId = reinterpret_cast<UINT_PTR>(control);
+            tool.lpszText = const_cast<LPWSTR>(GetActionButtonLabel(id));
+            SendMessageW(state.tooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tool));
+        };
+
+        addTool(kFitId);
+        addTool(kUndoId);
+        addTool(kRedoId);
+        addTool(kCopyId);
+        addTool(kDoneId);
+        addTool(kCancelId);
+    }
+
     static std::vector<int> GetMarkupButtonIds()
     {
         return {
@@ -888,9 +1029,14 @@ namespace oneshot
         {
             DeleteObject(state.uiBoldFont);
         }
+        if (state.actionSymbolFont)
+        {
+            DeleteObject(state.actionSymbolFont);
+        }
 
         state.uiFont = CreateUiFont(state.hwnd, 10);
         state.uiBoldFont = CreateUiFont(state.hwnd, 10, FW_SEMIBOLD);
+        state.actionSymbolFont = CreateSymbolFont(state.hwnd, kActionButtonFontPointSize);
 
         for (const int id : GetMarkupButtonIds())
         {
@@ -900,7 +1046,8 @@ namespace oneshot
                 continue;
             }
 
-            SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(state.uiFont), TRUE);
+            const HFONT font = IsActionButton(id) ? state.actionSymbolFont : state.uiFont;
+            SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
             ConfigureThemedButton(control);
         }
 
@@ -919,9 +1066,10 @@ namespace oneshot
 
         const UINT dpi = GetDpiForWindow(state.hwnd);
         const ToolbarLayout toolbar = BuildToolbarLayout(state.hwnd);
-        const int buttonTop = toolbar.toolsGroup.top + ScaleForDpi(18, dpi);
-        const int buttonHeight = ScaleForDpi(24, dpi);
+        const int buttonTop = toolbar.toolsGroup.top + ScaleForDpi(kToolbarButtonInsetY, dpi);
+        const int buttonHeight = ScaleForDpi(28, dpi);
         const int buttonGap = ScaleForDpi(6, dpi);
+        const int buttonRadius = ScaleForDpi(kActionButtonRadius, dpi);
         int left = toolbar.toolsGroup.left + ScaleForDpi(12, dpi);
 
         const auto placeButton = [&](int id, int width)
@@ -999,16 +1147,18 @@ namespace oneshot
             right -= buttonGap;
         };
 
-        placeActionButton(kCancelId, 66);
-        placeActionButton(kDoneId, 58);
-        placeActionButton(kCopyId, 58);
-        placeActionButton(kRedoId, 58);
-        placeActionButton(kUndoId, 58);
-        placeActionButton(kFitId, 46);
+        placeActionButton(kCancelId, kActionButtonSize);
+        placeActionButton(kDoneId, kActionButtonSize);
+        placeActionButton(kCopyId, kActionButtonSize);
+        placeActionButton(kRedoId, kActionButtonSize);
+        placeActionButton(kUndoId, kActionButtonSize);
+        placeActionButton(kFitId, kActionButtonSize);
+
+        ApplyToolbarButtonRegions(state, buttonRadius);
 
         if (state.canvas)
         {
-            const int canvasTop = toolbar.toolsGroup.bottom + ScaleForDpi(16, dpi);
+            const int canvasTop = toolbar.toolsGroup.bottom + ScaleForDpi(kToolbarBottomInset, dpi);
             RECT client{};
             GetClientRect(state.hwnd, &client);
             MoveWindow(state.canvas, ScaleForDpi(12, dpi), canvasTop, client.right - ScaleForDpi(24, dpi), client.bottom - canvasTop - ScaleForDpi(12, dpi), TRUE);
@@ -1159,7 +1309,20 @@ namespace oneshot
             label = buffer;
         }
 
-        if (draw.CtlID == kStrokeColorId || draw.CtlID == kFillColorId || draw.CtlID == kTextColorId)
+        if (IsActionButton(draw.CtlID))
+        {
+            if (const wchar_t* glyph = GetActionButtonGlyph(draw.CtlID))
+            {
+                HFONT previousFont = static_cast<HFONT>(SelectObject(draw.hDC, state.actionSymbolFont ? state.actionSymbolFont : GetStockObject(DEFAULT_GUI_FONT)));
+                RECT glyphRect = rect;
+                glyphRect.top -= 1;
+                SetBkMode(draw.hDC, TRANSPARENT);
+                SetTextColor(draw.hDC, text);
+                DrawTextW(draw.hDC, glyph, -1, &glyphRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+                SelectObject(draw.hDC, previousFont);
+            }
+        }
+        else if (draw.CtlID == kStrokeColorId || draw.CtlID == kFillColorId || draw.CtlID == kTextColorId)
         {
             RECT textRect = rect;
             textRect.left += 30;
@@ -1613,14 +1776,6 @@ namespace oneshot
         ClampViewportOffsets(state);
         state.imageRect = ComputeImageRect(state);
         RECT canvasRect = state.imageRect;
-        RECT panelRect = canvasRect;
-        InflateRect(&panelRect, 10, 10);
-
-        RECT shadowRect = panelRect;
-        OffsetRect(&shadowRect, 6, 8);
-        FillRoundedRect(targetDc, shadowRect, RGB(10, 14, 21), 20);
-        FillRoundedRect(targetDc, panelRect, kCanvasPanel, 20);
-        FrameRoundedRect(targetDc, panelRect, kCanvasBorder, 20);
 
         HDC memoryDc = CreateCompatibleDC(targetDc);
         HGDIOBJ previous = SelectObject(memoryDc, state.currentImage.bitmap);
@@ -1639,8 +1794,6 @@ namespace oneshot
             SRCCOPY);
         SelectObject(memoryDc, previous);
         DeleteDC(memoryDc);
-
-        FrameRoundedRect(targetDc, canvasRect, RGB(220, 228, 240), 12);
 
         if (state.tool == MarkupEditorWindow::Tool::Polygon && state.polygonInProgress)
         {
@@ -1824,8 +1977,22 @@ namespace oneshot
             CreateWindowExW(0, L"Button", L"Cancel", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCancelId)), GetModuleHandleW(nullptr), nullptr);
             state->fontCombo = CreateWindowExW(0, L"ComboBox", nullptr, WS_CHILD | WS_VISIBLE | WS_VSCROLL | CBS_DROPDOWNLIST | WS_TABSTOP, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFontComboId)), GetModuleHandleW(nullptr), nullptr);
             state->canvas = CreateWindowExW(0, L"OneShotNative.MarkupCanvas", L"", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, hwnd, nullptr, GetModuleHandleW(nullptr), state);
+            state->tooltip = CreateWindowExW(
+                WS_EX_TOPMOST,
+                TOOLTIPS_CLASSW,
+                nullptr,
+                WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                hwnd,
+                nullptr,
+                GetModuleHandleW(nullptr),
+                nullptr);
             PopulateFontCombo(state->fontCombo, state->textSettings.fontFace);
             ApplyToolbarFonts(*state);
+            ConfigureActionTooltips(*state);
             SyncToolOptionControls(*state);
             LayoutToolbarControls(*state);
             FitImageToViewport(*state);
@@ -2094,7 +2261,7 @@ namespace oneshot
             FillRect(dc, &client, backgroundBrush);
             DeleteObject(backgroundBrush);
 
-            RECT toolbarRect = MakeRect(0, 0, client.right, BuildToolbarLayout(hwnd).toolsGroup.bottom + ScaleForDpi(16, GetDpiForWindow(hwnd)));
+            RECT toolbarRect = MakeRect(0, 0, client.right, ScaleForDpi(kToolbarHeight, GetDpiForWindow(hwnd)));
             HBRUSH toolbarBrush = CreateSolidBrush(kToolbarSurface);
             FillRect(dc, &toolbarRect, toolbarBrush);
             DeleteObject(toolbarBrush);
@@ -2125,6 +2292,16 @@ namespace oneshot
             {
                 DeleteObject(state->uiBoldFont);
                 state->uiBoldFont = nullptr;
+            }
+            if (state->actionSymbolFont)
+            {
+                DeleteObject(state->actionSymbolFont);
+                state->actionSymbolFont = nullptr;
+            }
+            if (state->tooltip)
+            {
+                DestroyWindow(state->tooltip);
+                state->tooltip = nullptr;
             }
             return 0;
         default:
