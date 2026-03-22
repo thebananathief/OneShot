@@ -65,6 +65,55 @@ namespace
             (requested.tymed & candidate.tymed) != 0;
     }
 
+    bool CanFocusWindow(const HWND hwnd)
+    {
+        return hwnd && IsWindow(hwnd) && IsWindowEnabled(hwnd);
+    }
+
+    void RestoreFocusAtDropPoint()
+    {
+        POINT point{};
+        if (!GetCursorPos(&point))
+        {
+            return;
+        }
+
+        const HWND targetWindow = WindowFromPoint(point);
+        if (!CanFocusWindow(targetWindow))
+        {
+            return;
+        }
+
+        HWND rootWindow = GetAncestor(targetWindow, GA_ROOT);
+        if (!CanFocusWindow(rootWindow))
+        {
+            rootWindow = targetWindow;
+        }
+
+        SetForegroundWindow(rootWindow);
+
+        const DWORD currentThreadId = GetCurrentThreadId();
+        const DWORD targetThreadId = GetWindowThreadProcessId(rootWindow, nullptr);
+        if (targetThreadId == 0)
+        {
+            return;
+        }
+
+        const bool attached = currentThreadId != targetThreadId &&
+            AttachThreadInput(currentThreadId, targetThreadId, TRUE) != FALSE;
+
+        if (currentThreadId == targetThreadId || attached)
+        {
+            SetActiveWindow(rootWindow);
+            SetFocus(targetWindow);
+        }
+
+        if (attached)
+        {
+            AttachThreadInput(currentThreadId, targetThreadId, FALSE);
+        }
+    }
+
     class FormatEtcEnumerator final : public IEnumFORMATETC
     {
     public:
@@ -438,18 +487,9 @@ namespace oneshot
         dataObject->Release();
         dropSource->Release();
 
-        POINT point{};
-        if (GetCursorPos(&point))
-        {
-            const HWND target = WindowFromPoint(point);
-            if (target)
-            {
-                SetForegroundWindow(target);
-            }
-        }
-
         if (hr == DRAGDROP_S_DROP && (effect & DROPEFFECT_COPY) != 0)
         {
+            RestoreFocusAtDropPoint();
             OleUninitialize();
             return true;
         }
