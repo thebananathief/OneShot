@@ -32,8 +32,6 @@ namespace
         int dpi{96};
         int windowWidth{332};
         int windowHeight{160};
-        int shadowOffsetX{4};
-        int shadowOffsetY{6};
         int borderThickness{1};
         int cardRadius{22};
         int thumbnailRadius{18};
@@ -78,19 +76,13 @@ namespace
         layout.dpi = dpi > 0 ? dpi : 96;
         layout.windowWidth = ScaleValue(332, layout.dpi);
         layout.windowHeight = ScaleValue(160, layout.dpi);
-        layout.shadowOffsetX = ScaleValue(4, layout.dpi);
-        layout.shadowOffsetY = ScaleValue(6, layout.dpi);
         layout.borderThickness = ScaleValue(1, layout.dpi);
         layout.cardRadius = ScaleValue(22, layout.dpi);
         layout.thumbnailRadius = ScaleValue(18, layout.dpi);
         layout.buttonRadius = ScaleValue(14, layout.dpi);
         layout.thumbnailInset = std::max(1, ScaleValue(2, layout.dpi));
 
-        const int cardLeft = ScaleValue(3, layout.dpi);
-        const int cardTop = ScaleValue(3, layout.dpi);
-        const int cardWidth = layout.windowWidth - layout.shadowOffsetX - ScaleValue(5, layout.dpi);
-        const int cardHeight = layout.windowHeight - layout.shadowOffsetY - ScaleValue(5, layout.dpi);
-        layout.cardRect = MakeRect(cardLeft, cardTop, cardWidth, cardHeight);
+        layout.cardRect = MakeRect(0, 0, layout.windowWidth, layout.windowHeight);
 
         const int outerPadding = ScaleValue(12, layout.dpi);
         const int columnGap = ScaleValue(10, layout.dpi);
@@ -658,15 +650,6 @@ namespace oneshot
             PAINTSTRUCT paint{};
             HDC dc = BeginPaint(hwnd, &paint);
 
-            RECT client{};
-            GetClientRect(hwnd, &client);
-            HBRUSH clearBrush = CreateSolidBrush(palette.windowBackground);
-            FillRect(dc, &client, clearBrush);
-            DeleteObject(clearBrush);
-
-            RECT shadowRect = notification->layout.cardRect;
-            OffsetRect(&shadowRect, notification->layout.shadowOffsetX, notification->layout.shadowOffsetY);
-            ui::FillRoundedRect(dc, shadowRect, RGB(10, 14, 21), notification->layout.cardRadius);
             ui::FillRoundedRect(dc, notification->layout.cardRect, notification->backgroundColor, notification->layout.cardRadius);
             ui::FrameRoundedRect(dc, notification->layout.cardRect, palette.panelBorder, notification->layout.cardRadius, notification->layout.borderThickness);
 
