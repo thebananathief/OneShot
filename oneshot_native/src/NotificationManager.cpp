@@ -2,6 +2,7 @@
 
 #include "oneshot_native/UiTheme.h"
 
+#include <cwchar>
 #include <commctrl.h>
 #include <windowsx.h>
 
@@ -128,6 +129,28 @@ namespace
         TrackMouseEvent(&track);
         SetHover(hwnd, true);
         InvalidateRect(hwnd, nullptr, FALSE);
+    }
+
+    void TraceNotificationFailure(const wchar_t* step, DWORD error)
+    {
+        wchar_t buffer[256]{};
+        swprintf_s(buffer, L"OneShot notification: %ls failed (error=%lu)\n", step, static_cast<unsigned long>(error));
+        OutputDebugStringW(buffer);
+    }
+
+    void TraceNotificationVisibility(HWND hwnd, const RECT& rect)
+    {
+        wchar_t buffer[320]{};
+        swprintf_s(
+            buffer,
+            L"OneShot notification: hwnd=%p visible=%d rect=(%ld,%ld)-(%ld,%ld)\n",
+            hwnd,
+            IsWindowVisible(hwnd) ? 1 : 0,
+            static_cast<long>(rect.left),
+            static_cast<long>(rect.top),
+            static_cast<long>(rect.right),
+            static_cast<long>(rect.bottom));
+        OutputDebugStringW(buffer);
     }
 }
 
@@ -585,7 +608,7 @@ namespace oneshot
         notification->layout = BuildLayout(96);
 
         notification->hwnd = CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
             L"OneShotNative.Notification",
             kAppName,
             WS_POPUP,
@@ -593,13 +616,14 @@ namespace oneshot
             CW_USEDEFAULT,
             notification->layout.windowWidth,
             notification->layout.windowHeight,
-            nullptr,
+            owner,
             nullptr,
             GetModuleHandleW(nullptr),
             notification.get());
 
         if (!notification->hwnd)
         {
+            TraceNotificationFailure(L"CreateWindowExW(notification)", GetLastError());
             return;
         }
 
@@ -619,6 +643,12 @@ namespace oneshot
             reinterpret_cast<HMENU>(static_cast<INT_PTR>(kThumbControlId)),
             GetModuleHandleW(nullptr),
             notification.get());
+        if (!notification->thumbnail)
+        {
+            TraceNotificationFailure(L"CreateWindowExW(thumbnail)", GetLastError());
+            DestroyWindow(notification->hwnd);
+            return;
+        }
         notification->dismissButton = CreateWindowExW(
             0,
             WC_BUTTONW,
@@ -632,6 +662,12 @@ namespace oneshot
             reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDismissButtonId)),
             GetModuleHandleW(nullptr),
             nullptr);
+        if (!notification->dismissButton)
+        {
+            TraceNotificationFailure(L"CreateWindowExW(dismissButton)", GetLastError());
+            DestroyWindow(notification->hwnd);
+            return;
+        }
         notification->markupButton = CreateWindowExW(
             0,
             WC_BUTTONW,
@@ -645,6 +681,12 @@ namespace oneshot
             reinterpret_cast<HMENU>(static_cast<INT_PTR>(kMarkupButtonId)),
             GetModuleHandleW(nullptr),
             nullptr);
+        if (!notification->markupButton)
+        {
+            TraceNotificationFailure(L"CreateWindowExW(markupButton)", GetLastError());
+            DestroyWindow(notification->hwnd);
+            return;
+        }
 
         ConfigureButton(notification->dismissButton, notification->uiFont);
         ConfigureButton(notification->markupButton, notification->uiBoldFont);
@@ -652,10 +694,21 @@ namespace oneshot
         SetWindowSubclass(notification->markupButton, NotificationButtonProc, 0, 0);
 
         ApplyLayout(notification.get());
+        ShowWindow(notification->hwnd, SW_SHOWNOACTIVATE);
 
         _notifications.insert(_notifications.begin(), std::move(notification));
         RepositionAll();
         UpdateWindow(_notifications.front()->hwnd);
+
+        RECT windowRect{};
+        if (GetWindowRect(_notifications.front()->hwnd, &windowRect))
+        {
+            TraceNotificationVisibility(_notifications.front()->hwnd, windowRect);
+        }
+        else
+        {
+            TraceNotificationFailure(L"GetWindowRect(notification)", GetLastError());
+        }
     }
 
     void NotificationManager::CloseAll()
