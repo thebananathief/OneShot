@@ -24,5 +24,4 @@ namespace oneshot
     std::wstring SerializeEnvelope(const CommandEnvelope& envelope);
     std::wstring SerializeResponse(const CommandResponse& response);
     std::optional<CommandEnvelope> ParseEnvelope(const std::wstring& jsonLine);
-    std::optional<CommandResponse> ParseResponse(const std::wstring& jsonLine);
 }

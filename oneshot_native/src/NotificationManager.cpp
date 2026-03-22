@@ -5,15 +5,10 @@
 
 #include <cwchar>
 #include <commctrl.h>
-#include <dwmapi.h>
 #include <windowsx.h>
 
 namespace
 {
-#ifndef DWMWA_CLOAKED
-#define DWMWA_CLOAKED 14
-#endif
-
     constexpr int kNotificationMargin = 16;
     constexpr int kNotificationGap = 10;
     constexpr UINT_PTR kPulseTimerId = 1;
@@ -101,32 +96,8 @@ namespace
         return layout;
     }
 
-    RECT GetPreferredWorkArea()
+    RECT GetPrimaryWorkArea()
     {
-        POINT cursor{};
-        if (GetCursorPos(&cursor))
-        {
-            MONITORINFO monitorInfo{};
-            monitorInfo.cbSize = sizeof(monitorInfo);
-            if (const HMONITOR monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTOPRIMARY))
-            {
-                if (GetMonitorInfoW(monitor, &monitorInfo))
-                {
-                    return monitorInfo.rcWork;
-                }
-            }
-        }
-
-        MONITORINFO primaryInfo{};
-        primaryInfo.cbSize = sizeof(primaryInfo);
-        if (const HMONITOR primaryMonitor = MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY))
-        {
-            if (GetMonitorInfoW(primaryMonitor, &primaryInfo))
-            {
-                return primaryInfo.rcWork;
-            }
-        }
-
         RECT workArea{};
         SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
         return workArea;
@@ -213,11 +184,6 @@ namespace
         }
 
         return result;
-    }
-
-    bool IsShowStateDisplayable(UINT showCmd)
-    {
-        return showCmd != SW_HIDE && showCmd != SW_SHOWMINIMIZED && showCmd != SW_MINIMIZE && showCmd != SW_FORCEMINIMIZE;
     }
 }
 
@@ -669,7 +635,6 @@ namespace oneshot
         _debugState = NotificationDebugState{};
         _debugState.lastAttemptUtc = CurrentIso8601Utc();
         _debugState.showAttempted = true;
-        _debugState.workAreaRect = GetPreferredWorkArea();
 
         const auto recordFailure = [this](const wchar_t* step, DWORD error)
         {
@@ -779,50 +744,21 @@ namespace oneshot
         ApplyLayout(notification.get());
 
         _notifications.insert(_notifications.begin(), std::move(notification));
-        _debugState.setWindowPosSucceeded = RepositionAll();
+        RepositionAll();
         _debugState.showWindowResult = ShowWindow(_notifications.front()->hwnd, SW_SHOWNOACTIVATE) ? 1 : 0;
-        BringWindowToTop(_notifications.front()->hwnd);
         UpdateWindow(_notifications.front()->hwnd);
         RedrawWindow(_notifications.front()->hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
-
-        WINDOWPLACEMENT placement{};
-        placement.length = sizeof(placement);
-        if (GetWindowPlacement(_notifications.front()->hwnd, &placement))
-        {
-            _debugState.windowPlacementShowCmd = placement.showCmd;
-        }
-        else if (_debugState.lastFailedStep.empty())
-        {
-            recordFailure(L"GetWindowPlacement(notification)", GetLastError());
-        }
-
-        DWORD cloakedValue = 0;
-        if (FAILED(DwmGetWindowAttribute(_notifications.front()->hwnd, DWMWA_CLOAKED, &cloakedValue, sizeof(cloakedValue))))
-        {
-            cloakedValue = 0;
-        }
-        _debugState.cloaked = cloakedValue != 0;
-        _debugState.hasVisibleStyle = (GetWindowLongPtrW(_notifications.front()->hwnd, GWL_STYLE) & WS_VISIBLE) != 0;
 
         RECT windowRect{};
         if (GetWindowRect(_notifications.front()->hwnd, &windowRect))
         {
             _debugState.windowRect = windowRect;
-            RECT intersection{};
-            _debugState.rectIntersectsWorkArea = IntersectRect(&intersection, &_debugState.workAreaRect, &windowRect) != FALSE;
-            _debugState.displayedOnScreen =
-                _debugState.windowCreated &&
-                _debugState.setWindowPosSucceeded &&
-                _debugState.hasVisibleStyle &&
-                IsShowStateDisplayable(_debugState.windowPlacementShowCmd) &&
-                !IsRectEmpty(&windowRect) &&
-                _debugState.rectIntersectsWorkArea &&
-                !_debugState.cloaked;
+            _debugState.windowVisible = IsWindowVisible(_notifications.front()->hwnd) != FALSE;
             TraceNotificationVisibility(_notifications.front()->hwnd, windowRect);
-            if (!_debugState.displayedOnScreen && _debugState.lastFailedStep.empty())
+            if (!_debugState.windowVisible && _debugState.lastFailedStep.empty())
             {
-                _debugState.lastFailedStep = L"display-verification";
-                _debugState.lastErrorText = L"Notification window was created but failed on-screen display verification.";
+                _debugState.lastFailedStep = L"visibility-check";
+                _debugState.lastErrorText = L"Notification window was created but is not visible after show.";
             }
         }
         else
@@ -895,13 +831,10 @@ namespace oneshot
         InvalidateRect(notification->hwnd, nullptr, FALSE);
     }
 
-    bool NotificationManager::RepositionAll()
+    void NotificationManager::RepositionAll()
     {
-        const RECT workArea = GetPreferredWorkArea();
-        _debugState.workAreaRect = workArea;
+        const RECT workArea = GetPrimaryWorkArea();
         int top = workArea.top + kNotificationMargin;
-        bool primaryPositioned = true;
-        bool firstWindow = true;
 
         for (auto& notification : _notifications)
         {
@@ -920,16 +853,9 @@ namespace oneshot
                 _debugState.lastErrorCode = error;
                 _debugState.lastErrorText = DescribeWindowsError(error);
                 TraceNotificationFailure(L"SetWindowPos(notification)", error);
-                if (firstWindow)
-                {
-                    primaryPositioned = false;
-                }
             }
             top += height + kNotificationGap;
-            firstWindow = false;
         }
-
-        return primaryPositioned;
     }
 
     void NotificationManager::CloseNotification(NotificationWindow* notification)
@@ -954,6 +880,6 @@ namespace oneshot
         std::error_code error;
         std::filesystem::remove((*it)->dragPath, error);
         _notifications.erase(it);
-        (void)RepositionAll();
+        RepositionAll();
     }
 }

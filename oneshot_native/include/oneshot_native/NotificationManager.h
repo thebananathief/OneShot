@@ -19,14 +19,8 @@ namespace oneshot
         bool dismissButtonCreated{false};
         bool markupButtonCreated{false};
         int showWindowResult{0};
-        bool setWindowPosSucceeded{false};
-        bool hasVisibleStyle{false};
-        bool rectIntersectsWorkArea{false};
-        bool cloaked{false};
-        UINT windowPlacementShowCmd{0};
-        bool displayedOnScreen{false};
+        bool windowVisible{false};
         RECT windowRect{};
-        RECT workAreaRect{};
     };
 
     class NotificationManager
@@ -45,7 +39,7 @@ namespace oneshot
         [[nodiscard]] const NotificationDebugState& GetDebugState() const noexcept { return _debugState; }
 
     private:
-        bool RepositionAll();
+        void RepositionAll();
 
         AppPaths _paths;
         DragDropService _dragDrop;

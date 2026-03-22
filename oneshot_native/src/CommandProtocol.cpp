@@ -5,38 +5,6 @@
 
 namespace
 {
-    std::wstring EscapeJsonString(std::wstring_view value)
-    {
-        std::wstring escaped;
-        escaped.reserve(value.size());
-        for (const wchar_t ch : value)
-        {
-            switch (ch)
-            {
-            case L'\\':
-                escaped += L"\\\\";
-                break;
-            case L'"':
-                escaped += L"\\\"";
-                break;
-            case L'\n':
-                escaped += L"\\n";
-                break;
-            case L'\r':
-                escaped += L"\\r";
-                break;
-            case L'\t':
-                escaped += L"\\t";
-                break;
-            default:
-                escaped.push_back(ch);
-                break;
-            }
-        }
-
-        return escaped;
-    }
-
     std::optional<std::wstring> ExtractJsonString(std::wstring_view json, std::wstring_view key)
     {
         const auto probe = std::wstring(L"\"") + std::wstring(key) + L"\"";
@@ -58,54 +26,13 @@ namespace
             return std::nullopt;
         }
 
-        std::wstring value;
-        bool escape = false;
-        for (size_t index = quoteStart + 1; index < json.size(); ++index)
+        const auto quoteEnd = json.find(L'"', quoteStart + 1);
+        if (quoteEnd == std::wstring_view::npos)
         {
-            const wchar_t ch = json[index];
-            if (escape)
-            {
-                switch (ch)
-                {
-                case L'n':
-                    value.push_back(L'\n');
-                    break;
-                case L'r':
-                    value.push_back(L'\r');
-                    break;
-                case L't':
-                    value.push_back(L'\t');
-                    break;
-                case L'\\':
-                    value.push_back(L'\\');
-                    break;
-                case L'"':
-                    value.push_back(L'"');
-                    break;
-                default:
-                    value.push_back(ch);
-                    break;
-                }
-
-                escape = false;
-                continue;
-            }
-
-            if (ch == L'\\')
-            {
-                escape = true;
-                continue;
-            }
-
-            if (ch == L'"')
-            {
-                return value;
-            }
-
-            value.push_back(ch);
+            return std::nullopt;
         }
 
-        return std::nullopt;
+        return std::wstring(json.substr(quoteStart + 1, quoteEnd - quoteStart - 1));
     }
 
     int ExtractJsonInt(std::wstring_view json, std::wstring_view key, int fallback)
@@ -167,9 +94,9 @@ namespace oneshot
     {
         std::wstringstream builder;
         builder << L"{\"v\":" << envelope.version
-                << L",\"command\":\"" << EscapeJsonString(envelope.command)
-                << L"\",\"request_id\":\"" << EscapeJsonString(envelope.requestId)
-                << L"\",\"sent_at\":\"" << EscapeJsonString(envelope.sentAt)
+                << L",\"command\":\"" << envelope.command
+                << L"\",\"request_id\":\"" << envelope.requestId
+                << L"\",\"sent_at\":\"" << envelope.sentAt
                 << L"\"}\n";
         return builder.str();
     }
@@ -178,8 +105,8 @@ namespace oneshot
     {
         std::wstringstream builder;
         builder << L"{\"ok\":" << (response.ok ? L"true" : L"false")
-                << L",\"request_id\":\"" << EscapeJsonString(response.requestId)
-                << L"\",\"message\":\"" << EscapeJsonString(response.message)
+                << L",\"request_id\":\"" << response.requestId
+                << L"\",\"message\":\"" << response.message
                 << L"\"}\n";
         return builder.str();
     }
@@ -201,22 +128,5 @@ namespace oneshot
         envelope.requestId = *requestId;
         envelope.sentAt = sentAt.value_or(L"");
         return envelope;
-    }
-
-    std::optional<CommandResponse> ParseResponse(const std::wstring& jsonLine)
-    {
-        auto requestId = ExtractJsonString(jsonLine, L"request_id");
-        auto message = ExtractJsonString(jsonLine, L"message");
-
-        if (!requestId.has_value() || !message.has_value())
-        {
-            return std::nullopt;
-        }
-
-        CommandResponse response{};
-        response.ok = jsonLine.find(L"\"ok\":true") != std::wstring::npos;
-        response.requestId = *requestId;
-        response.message = *message;
-        return response;
     }
 }
