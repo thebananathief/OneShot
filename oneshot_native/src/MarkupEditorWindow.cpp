@@ -9,6 +9,10 @@
 
 namespace
 {
+    using StrokeToolSettings = oneshot::MarkupStrokePreferences;
+    using ShapeToolSettings = oneshot::MarkupShapePreferences;
+    using TextToolSettings = oneshot::MarkupTextPreferences;
+
     constexpr int kToolbarGroupHeight = 64;
     constexpr int kMargin = 16;
     constexpr double kMaxZoom = 8.0;
@@ -91,26 +95,6 @@ namespace
     {
         Neutral,
         Accent
-    };
-
-    struct StrokeToolSettings
-    {
-        COLORREF color{RGB(255, 0, 0)};
-        int thickness{3};
-    };
-
-    struct ShapeToolSettings
-    {
-        StrokeToolSettings stroke{};
-        COLORREF fillColor{RGB(255, 224, 224)};
-        bool fillEnabled{true};
-    };
-
-    struct TextToolSettings
-    {
-        COLORREF color{RGB(255, 0, 0)};
-        int fontSize{22};
-        std::wstring fontFace{L"Segoe UI"};
     };
 
     struct ToolbarControlSpec
@@ -628,6 +612,7 @@ namespace oneshot
         TextToolSettings textSettings{};
         bool finished{false};
         OutputService* outputService{nullptr};
+        MarkupEditorSettingsStore* settingsStore{nullptr};
         COLORREF customColors[16]{};
         HWND fontCombo{nullptr};
         double zoom{1.0};
@@ -651,8 +636,9 @@ namespace oneshot
         int canvasBackBufferHeight{0};
     };
 
-    MarkupEditorWindow::MarkupEditorWindow(OutputService& outputService)
+    MarkupEditorWindow::MarkupEditorWindow(OutputService& outputService, MarkupEditorSettingsStore& settingsStore)
         : _outputService(outputService)
+        , _settingsStore(settingsStore)
     {
     }
 
@@ -1115,6 +1101,30 @@ namespace oneshot
         return meta;
     }
 
+    static MarkupEditorPreferences BuildPreferencesSnapshot(const MarkupEditorWindow::State& state)
+    {
+        MarkupEditorPreferences preferences{};
+        preferences.activeTool = state.tool;
+        preferences.pen = state.penSettings;
+        preferences.line = state.lineSettings;
+        preferences.arrow = state.arrowSettings;
+        preferences.rectangle = state.rectangleSettings;
+        preferences.ellipse = state.ellipseSettings;
+        preferences.polygon = state.polygonSettings;
+        preferences.text = state.textSettings;
+        return preferences;
+    }
+
+    static void PersistEditorPreferences(MarkupEditorWindow::State& state)
+    {
+        if (!state.settingsStore)
+        {
+            return;
+        }
+
+        state.settingsStore->Save(BuildPreferencesSnapshot(state));
+    }
+
     static bool ShouldShowToolControl(MarkupEditorWindow::Tool tool, int id)
     {
         switch (id)
@@ -1176,7 +1186,13 @@ namespace oneshot
             const LRESULT selection = SendMessageW(state.fontCombo, CB_SELECTSTRING, static_cast<WPARAM>(-1), reinterpret_cast<LPARAM>(text.fontFace.c_str()));
             if (selection == CB_ERR)
             {
-                SendMessageW(state.fontCombo, CB_SETCURSEL, 0, 0);
+                const LRESULT fallbackSelection = SendMessageW(state.fontCombo, CB_SETCURSEL, 0, 0);
+                if (fallbackSelection != CB_ERR)
+                {
+                    wchar_t fontName[LF_FACESIZE]{};
+                    SendMessageW(state.fontCombo, CB_GETLBTEXT, fallbackSelection, reinterpret_cast<LPARAM>(fontName));
+                    state.textSettings.fontFace = fontName;
+                }
             }
         }
     }
@@ -1984,6 +2000,22 @@ namespace oneshot
             kToolTextId);
     }
 
+    static void RefreshToolSelectionUi(MarkupEditorWindow::State& state)
+    {
+        UpdateToolButtons(state);
+        SyncToolOptionControls(state);
+        LayoutToolbarControls(state);
+        InvalidateRect(state.hwnd, nullptr, FALSE);
+        InvalidateCanvas(state);
+    }
+
+    static void SetActiveTool(MarkupEditorWindow::State& state, MarkupEditorWindow::Tool tool)
+    {
+        state.tool = tool;
+        PersistEditorPreferences(state);
+        RefreshToolSelectionUi(state);
+    }
+
     static void DrawCanvas(MarkupEditorWindow::State& state, HDC hdc)
     {
         RECT client{};
@@ -2122,12 +2154,23 @@ namespace oneshot
 
         State state{};
         state.outputService = &_outputService;
+        state.settingsStore = &_settingsStore;
         state.currentImage.bitmap = CloneBitmap(source.bitmap);
         state.currentImage.x = source.x;
         state.currentImage.y = source.y;
         state.currentImage.width = source.width;
         state.currentImage.height = source.height;
         state.currentImage.capturedAtUtc = source.capturedAtUtc;
+
+        const auto& preferences = _settingsStore.GetPreferences();
+        state.tool = preferences.activeTool;
+        state.penSettings = preferences.pen;
+        state.lineSettings = preferences.line;
+        state.arrowSettings = preferences.arrow;
+        state.rectangleSettings = preferences.rectangle;
+        state.ellipseSettings = preferences.ellipse;
+        state.polygonSettings = preferences.polygon;
+        state.textSettings = preferences.text;
 
         HWND window = CreateWindowExW(
             WS_EX_APPWINDOW,
@@ -2277,60 +2320,25 @@ namespace oneshot
             switch (LOWORD(wParam))
             {
             case kToolPenId:
-                state->tool = Tool::Pen;
-                UpdateToolButtons(*state);
-                SyncToolOptionControls(*state);
-                LayoutToolbarControls(*state);
-                InvalidateRect(hwnd, nullptr, FALSE);
-                InvalidateCanvas(*state);
+                SetActiveTool(*state, Tool::Pen);
                 return 0;
             case kToolLineId:
-                state->tool = Tool::Line;
-                UpdateToolButtons(*state);
-                SyncToolOptionControls(*state);
-                LayoutToolbarControls(*state);
-                InvalidateRect(hwnd, nullptr, FALSE);
-                InvalidateCanvas(*state);
+                SetActiveTool(*state, Tool::Line);
                 return 0;
             case kToolArrowId:
-                state->tool = Tool::Arrow;
-                UpdateToolButtons(*state);
-                SyncToolOptionControls(*state);
-                LayoutToolbarControls(*state);
-                InvalidateRect(hwnd, nullptr, FALSE);
-                InvalidateCanvas(*state);
+                SetActiveTool(*state, Tool::Arrow);
                 return 0;
             case kToolRectId:
-                state->tool = Tool::Rectangle;
-                UpdateToolButtons(*state);
-                SyncToolOptionControls(*state);
-                LayoutToolbarControls(*state);
-                InvalidateRect(hwnd, nullptr, FALSE);
-                InvalidateCanvas(*state);
+                SetActiveTool(*state, Tool::Rectangle);
                 return 0;
             case kToolEllipseId:
-                state->tool = Tool::Ellipse;
-                UpdateToolButtons(*state);
-                SyncToolOptionControls(*state);
-                LayoutToolbarControls(*state);
-                InvalidateRect(hwnd, nullptr, FALSE);
-                InvalidateCanvas(*state);
+                SetActiveTool(*state, Tool::Ellipse);
                 return 0;
             case kToolPolygonId:
-                state->tool = Tool::Polygon;
-                UpdateToolButtons(*state);
-                SyncToolOptionControls(*state);
-                LayoutToolbarControls(*state);
-                InvalidateRect(hwnd, nullptr, FALSE);
-                InvalidateCanvas(*state);
+                SetActiveTool(*state, Tool::Polygon);
                 return 0;
             case kToolTextId:
-                state->tool = Tool::Text;
-                UpdateToolButtons(*state);
-                SyncToolOptionControls(*state);
-                LayoutToolbarControls(*state);
-                InvalidateRect(hwnd, nullptr, FALSE);
-                InvalidateCanvas(*state);
+                SetActiveTool(*state, Tool::Text);
                 return 0;
             case kUndoId:
                 if (!state->undoStack.empty())
@@ -2372,6 +2380,7 @@ namespace oneshot
                     auto& stroke = GetStrokeSettings(*state, state->tool);
                     if (ChooseEditorColor(hwnd, stroke.color, state->customColors))
                     {
+                        PersistEditorPreferences(*state);
                         InvalidateRect(hwnd, nullptr, FALSE);
                         InvalidateCanvas(*state);
                     }
@@ -2382,6 +2391,7 @@ namespace oneshot
                 {
                     if (ChooseEditorColor(hwnd, shape->fillColor, state->customColors))
                     {
+                        PersistEditorPreferences(*state);
                         InvalidateRect(hwnd, nullptr, FALSE);
                         InvalidateCanvas(*state);
                     }
@@ -2393,6 +2403,7 @@ namespace oneshot
                     auto& text = GetTextSettings(*state);
                     if (ChooseEditorColor(hwnd, text.color, state->customColors))
                     {
+                        PersistEditorPreferences(*state);
                         InvalidateRect(hwnd, nullptr, FALSE);
                         InvalidateCanvas(*state);
                     }
@@ -2402,6 +2413,7 @@ namespace oneshot
                 if (ShapeToolSettings* shape = GetShapeSettings(*state, state->tool))
                 {
                     shape->fillEnabled = IsDlgButtonChecked(hwnd, kFillToggleId) == BST_CHECKED;
+                    PersistEditorPreferences(*state);
                     InvalidateRect(hwnd, nullptr, FALSE);
                     InvalidateCanvas(*state);
                 }
@@ -2411,6 +2423,7 @@ namespace oneshot
                 {
                     auto& stroke = GetStrokeSettings(*state, state->tool);
                     stroke.thickness = std::max(1, stroke.thickness - 1);
+                    PersistEditorPreferences(*state);
                     InvalidateRect(hwnd, nullptr, FALSE);
                     InvalidateCanvas(*state);
                 }
@@ -2420,6 +2433,7 @@ namespace oneshot
                 {
                     auto& stroke = GetStrokeSettings(*state, state->tool);
                     stroke.thickness = std::min(16, stroke.thickness + 1);
+                    PersistEditorPreferences(*state);
                     InvalidateRect(hwnd, nullptr, FALSE);
                     InvalidateCanvas(*state);
                 }
@@ -2429,6 +2443,7 @@ namespace oneshot
                 {
                     auto& text = GetTextSettings(*state);
                     text.fontSize = std::max(8, text.fontSize - 2);
+                    PersistEditorPreferences(*state);
                     InvalidateRect(hwnd, nullptr, FALSE);
                     InvalidateCanvas(*state);
                 }
@@ -2438,6 +2453,7 @@ namespace oneshot
                 {
                     auto& text = GetTextSettings(*state);
                     text.fontSize = std::min(96, text.fontSize + 2);
+                    PersistEditorPreferences(*state);
                     InvalidateRect(hwnd, nullptr, FALSE);
                     InvalidateCanvas(*state);
                 }
@@ -2468,6 +2484,7 @@ namespace oneshot
                     wchar_t fontName[LF_FACESIZE]{};
                     SendMessageW(state->fontCombo, CB_GETLBTEXT, selection, reinterpret_cast<LPARAM>(fontName));
                     state->textSettings.fontFace = fontName;
+                    PersistEditorPreferences(*state);
                 }
                 InvalidateRect(hwnd, nullptr, FALSE);
                 InvalidateCanvas(*state);

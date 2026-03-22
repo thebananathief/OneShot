@@ -1,6 +1,7 @@
 #pragma once
 
 #include "oneshot_native/CaptureTypes.h"
+#include "oneshot_native/MarkupEditorSettingsStore.h"
 #include "oneshot_native/OutputService.h"
 
 namespace oneshot
@@ -8,20 +9,12 @@ namespace oneshot
     class MarkupEditorWindow
     {
     public:
-        explicit MarkupEditorWindow(OutputService& outputService);
+        using Tool = MarkupTool;
+
+        MarkupEditorWindow(OutputService& outputService, MarkupEditorSettingsStore& settingsStore);
         ~MarkupEditorWindow();
 
         [[nodiscard]] std::optional<CapturedImage> Edit(HWND owner, const CapturedImage& source);
-        enum class Tool
-        {
-            Pen,
-            Line,
-            Arrow,
-            Rectangle,
-            Ellipse,
-            Polygon,
-            Text
-        };
 
         struct State;
 
@@ -34,5 +27,6 @@ namespace oneshot
 
     private:
         OutputService& _outputService;
+        MarkupEditorSettingsStore& _settingsStore;
     };
 }

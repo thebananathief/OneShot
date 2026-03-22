@@ -15,6 +15,7 @@ add_executable(oneshot WIN32
     src/CommandServer.cpp
     src/DiagnosticsService.cpp
     src/DragDropService.cpp
+    src/MarkupEditorSettingsStore.cpp
     src/MarkupEditorWindow.cpp
     src/NotificationManager.cpp
     src/OverlayManager.cpp

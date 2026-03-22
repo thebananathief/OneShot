@@ -705,7 +705,8 @@ namespace oneshot
 
     NotificationManager::NotificationManager(AppPaths paths, OutputService& outputService)
         : _paths(std::move(paths))
-        , _markupEditor(outputService)
+        , _markupEditorSettings(_paths)
+        , _markupEditor(outputService, _markupEditorSettings)
         , _outputService(outputService)
     {
         INITCOMMONCONTROLSEX controls{};

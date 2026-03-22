@@ -2,6 +2,7 @@
 
 #include "oneshot_native/CaptureTypes.h"
 #include "oneshot_native/DragDropService.h"
+#include "oneshot_native/MarkupEditorSettingsStore.h"
 #include "oneshot_native/MarkupEditorWindow.h"
 #include "oneshot_native/PathService.h"
 
@@ -43,6 +44,7 @@ namespace oneshot
 
         AppPaths _paths;
         DragDropService _dragDrop;
+        MarkupEditorSettingsStore _markupEditorSettings;
         MarkupEditorWindow _markupEditor;
         OutputService& _outputService;
         std::vector<std::unique_ptr<NotificationWindow>> _notifications;
