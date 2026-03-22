@@ -174,7 +174,6 @@ namespace
             , _preferredDropEffectFormat(static_cast<CLIPFORMAT>(RegisterClipboardFormatW(kPreferredDropEffectFormat)))
         {
             _formats.push_back(MakeFormat(CF_HDROP));
-            _formats.push_back(MakeFormat(CF_UNICODETEXT));
             if (_preferredDropEffectFormat != 0)
             {
                 _formats.push_back(MakeFormat(_preferredDropEffectFormat));
@@ -259,25 +258,6 @@ namespace
                 auto* pathBuffer = reinterpret_cast<wchar_t*>(reinterpret_cast<BYTE*>(dropFiles) + sizeof(DropFilesHeader));
                 memcpy(pathBuffer, widePath.c_str(), pathBytes);
                 pathBuffer[widePath.size() + 1] = L'\0';
-                GlobalUnlock(global);
-            }
-            else if (formatEtc->cfFormat == CF_UNICODETEXT)
-            {
-                const auto widePath = _filePath.wstring();
-                const SIZE_T bytes = (widePath.size() + 1) * sizeof(wchar_t);
-                global = GlobalAlloc(GHND, bytes);
-                if (!global)
-                {
-                    return E_OUTOFMEMORY;
-                }
-
-                auto* buffer = static_cast<wchar_t*>(GlobalLock(global));
-                if (!buffer)
-                {
-                    GlobalFree(global);
-                    return E_OUTOFMEMORY;
-                }
-                memcpy(buffer, widePath.c_str(), bytes);
                 GlobalUnlock(global);
             }
             else if (_preferredDropEffectFormat != 0 && formatEtc->cfFormat == _preferredDropEffectFormat)
