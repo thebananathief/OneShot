@@ -52,8 +52,14 @@ namespace oneshot
                 << L"    dismiss_button_created: " << BoolText(notificationDebug.dismissButtonCreated) << L",\n"
                 << L"    markup_button_created: " << BoolText(notificationDebug.markupButtonCreated) << L",\n"
                 << L"    show_window_result: " << notificationDebug.showWindowResult << L",\n"
-                << L"    window_visible: " << BoolText(notificationDebug.windowVisible) << L",\n"
-                << L"    window_rect: " << RectText(notificationDebug.windowRect) << L"\n"
+                << L"    set_window_pos_succeeded: " << BoolText(notificationDebug.setWindowPosSucceeded) << L",\n"
+                << L"    has_visible_style: " << BoolText(notificationDebug.hasVisibleStyle) << L",\n"
+                << L"    rect_intersects_work_area: " << BoolText(notificationDebug.rectIntersectsWorkArea) << L",\n"
+                << L"    cloaked: " << BoolText(notificationDebug.cloaked) << L",\n"
+                << L"    window_placement_show_cmd: " << notificationDebug.windowPlacementShowCmd << L",\n"
+                << L"    displayed_on_screen: " << BoolText(notificationDebug.displayedOnScreen) << L",\n"
+                << L"    window_rect: " << RectText(notificationDebug.windowRect) << L",\n"
+                << L"    work_area_rect: " << RectText(notificationDebug.workAreaRect) << L"\n"
                 << L"  }\n"
                 << L"}\n";
         return builder.str();

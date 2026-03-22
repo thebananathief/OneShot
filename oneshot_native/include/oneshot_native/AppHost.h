@@ -40,6 +40,7 @@ namespace oneshot
         bool EnsurePrimaryOrForward();
         void HandleSnapshotRequested();
         CommandResponse HandleCommand(const CommandEnvelope& envelope);
+        bool TryGetPrimaryDiagnostics(std::wstring& diagnosticsText) const;
         void ShowDiagnosticsAndExit() const;
         void InstallStartupAndExit() const;
         void UninstallStartupAndExit() const;

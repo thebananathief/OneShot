@@ -272,7 +272,7 @@ namespace oneshot
         }
 
         _notificationManager.Show(_hwnd, std::move(*capture), savedPath, dragPath);
-        if (_notificationManager.GetDebugState().showAttempted && !_notificationManager.GetDebugState().windowVisible)
+        if (_notificationManager.GetDebugState().showAttempted && !_notificationManager.GetDebugState().displayedOnScreen)
         {
             _tray.ShowBalloon(L"OneShot", L"Screenshot saved, but notification failed to display.");
         }
@@ -327,9 +327,38 @@ namespace oneshot
         return response;
     }
 
+    bool AppHost::TryGetPrimaryDiagnostics(std::wstring& diagnosticsText) const
+    {
+        CommandEnvelope envelope{};
+        envelope.command = kCommandDiagnostics;
+        envelope.requestId = NewRequestId();
+        envelope.sentAt = CurrentIso8601Utc();
+
+        std::wstring rawResponse;
+        if (!_client.Send(envelope, 1500, rawResponse))
+        {
+            return false;
+        }
+
+        const auto parsed = ParseResponse(rawResponse);
+        if (!parsed.has_value())
+        {
+            return false;
+        }
+
+        diagnosticsText = parsed->message;
+        return true;
+    }
+
     void AppHost::ShowDiagnosticsAndExit() const
     {
-        WriteConsoleText(_diagnostics.BuildDiagnosticsText(_startupService.IsEnabled(), _snapshotActive.load(), _notificationManager.GetDebugState()));
+        std::wstring diagnosticsText;
+        if (!TryGetPrimaryDiagnostics(diagnosticsText))
+        {
+            diagnosticsText = _diagnostics.BuildDiagnosticsText(_startupService.IsEnabled(), _snapshotActive.load(), _notificationManager.GetDebugState());
+        }
+
+        WriteConsoleText(diagnosticsText);
     }
 
     void AppHost::InstallStartupAndExit() const
