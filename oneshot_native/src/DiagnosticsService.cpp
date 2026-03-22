@@ -6,6 +6,17 @@ namespace
     {
         return value ? L"true" : L"false";
     }
+
+    std::wstring RectText(const RECT& rect)
+    {
+        std::wstringstream builder;
+        builder << L"{ left: " << rect.left
+                << L", top: " << rect.top
+                << L", right: " << rect.right
+                << L", bottom: " << rect.bottom
+                << L" }";
+        return builder.str();
+    }
 }
 
 namespace oneshot
@@ -15,7 +26,7 @@ namespace oneshot
     {
     }
 
-    std::wstring DiagnosticsService::BuildDiagnosticsText(bool startupEnabled, bool snapshotActive) const
+    std::wstring DiagnosticsService::BuildDiagnosticsText(bool startupEnabled, bool snapshotActive, const NotificationDebugState& notificationDebug) const
     {
         std::wstringstream builder;
         builder << L"{\n"
@@ -29,7 +40,21 @@ namespace oneshot
                 << L"  monitor_count: " << GetSystemMetrics(SM_CMONITORS) << L",\n"
                 << L"  running: true,\n"
                 << L"  snapshot_active: " << BoolText(snapshotActive) << L",\n"
-                << L"  state: \"" << (snapshotActive ? L"busy" : L"idle") << L"\"\n"
+                << L"  state: \"" << (snapshotActive ? L"busy" : L"idle") << L"\",\n"
+                << L"  notification: {\n"
+                << L"    last_attempt_utc: \"" << notificationDebug.lastAttemptUtc << L"\",\n"
+                << L"    last_failed_step: \"" << notificationDebug.lastFailedStep << L"\",\n"
+                << L"    last_error_code: " << notificationDebug.lastErrorCode << L",\n"
+                << L"    last_error_text: \"" << notificationDebug.lastErrorText << L"\",\n"
+                << L"    show_attempted: " << BoolText(notificationDebug.showAttempted) << L",\n"
+                << L"    window_created: " << BoolText(notificationDebug.windowCreated) << L",\n"
+                << L"    thumbnail_created: " << BoolText(notificationDebug.thumbnailCreated) << L",\n"
+                << L"    dismiss_button_created: " << BoolText(notificationDebug.dismissButtonCreated) << L",\n"
+                << L"    markup_button_created: " << BoolText(notificationDebug.markupButtonCreated) << L",\n"
+                << L"    show_window_result: " << notificationDebug.showWindowResult << L",\n"
+                << L"    window_visible: " << BoolText(notificationDebug.windowVisible) << L",\n"
+                << L"    window_rect: " << RectText(notificationDebug.windowRect) << L"\n"
+                << L"  }\n"
                 << L"}\n";
         return builder.str();
     }

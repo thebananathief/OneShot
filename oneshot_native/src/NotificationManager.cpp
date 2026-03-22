@@ -1,5 +1,6 @@
 #include "oneshot_native/NotificationManager.h"
 
+#include "oneshot_native/CommandProtocol.h"
 #include "oneshot_native/UiTheme.h"
 
 #include <cwchar>
@@ -151,6 +152,38 @@ namespace
             static_cast<long>(rect.right),
             static_cast<long>(rect.bottom));
         OutputDebugStringW(buffer);
+    }
+
+    std::wstring DescribeWindowsError(DWORD error)
+    {
+        if (error == 0)
+        {
+            return L"";
+        }
+
+        LPWSTR message = nullptr;
+        const DWORD length = FormatMessageW(
+            FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+            nullptr,
+            error,
+            0,
+            reinterpret_cast<LPWSTR>(&message),
+            0,
+            nullptr);
+        if (length == 0 || !message)
+        {
+            return L"Unknown Win32 error";
+        }
+
+        std::wstring result(message, length);
+        LocalFree(message);
+
+        while (!result.empty() && (result.back() == L'\r' || result.back() == L'\n' || result.back() == L' '))
+        {
+            result.pop_back();
+        }
+
+        return result;
     }
 }
 
@@ -457,9 +490,6 @@ namespace oneshot
         {
         case WM_ERASEBKGND:
             return TRUE;
-        case WM_CREATE:
-            ui::ApplyModernFrame(hwnd, true);
-            return 0;
         case WM_TIMER:
             if (wParam == kPulseTimerId)
             {
@@ -600,6 +630,20 @@ namespace oneshot
 
     void NotificationManager::Show(HWND owner, CapturedImage image, const std::filesystem::path& savedPath, const std::filesystem::path& dragPath)
     {
+        (void)owner;
+
+        _debugState = NotificationDebugState{};
+        _debugState.lastAttemptUtc = CurrentIso8601Utc();
+        _debugState.showAttempted = true;
+
+        const auto recordFailure = [this](const wchar_t* step, DWORD error)
+        {
+            _debugState.lastFailedStep = step ? step : L"";
+            _debugState.lastErrorCode = error;
+            _debugState.lastErrorText = DescribeWindowsError(error);
+            TraceNotificationFailure(step ? step : L"notification", error);
+        };
+
         auto notification = std::make_unique<NotificationWindow>();
         notification->manager = this;
         notification->image = std::move(image);
@@ -616,16 +660,17 @@ namespace oneshot
             CW_USEDEFAULT,
             notification->layout.windowWidth,
             notification->layout.windowHeight,
-            owner,
+            nullptr,
             nullptr,
             GetModuleHandleW(nullptr),
             notification.get());
 
         if (!notification->hwnd)
         {
-            TraceNotificationFailure(L"CreateWindowExW(notification)", GetLastError());
+            recordFailure(L"CreateWindowExW(notification)", GetLastError());
             return;
         }
+        _debugState.windowCreated = true;
 
         notification->uiFont = ui::CreateUiFont(notification->hwnd, 10);
         notification->uiBoldFont = ui::CreateUiFont(notification->hwnd, 10, FW_SEMIBOLD);
@@ -645,10 +690,11 @@ namespace oneshot
             notification.get());
         if (!notification->thumbnail)
         {
-            TraceNotificationFailure(L"CreateWindowExW(thumbnail)", GetLastError());
+            recordFailure(L"CreateWindowExW(thumbnail)", GetLastError());
             DestroyWindow(notification->hwnd);
             return;
         }
+        _debugState.thumbnailCreated = true;
         notification->dismissButton = CreateWindowExW(
             0,
             WC_BUTTONW,
@@ -664,10 +710,11 @@ namespace oneshot
             nullptr);
         if (!notification->dismissButton)
         {
-            TraceNotificationFailure(L"CreateWindowExW(dismissButton)", GetLastError());
+            recordFailure(L"CreateWindowExW(dismissButton)", GetLastError());
             DestroyWindow(notification->hwnd);
             return;
         }
+        _debugState.dismissButtonCreated = true;
         notification->markupButton = CreateWindowExW(
             0,
             WC_BUTTONW,
@@ -683,10 +730,11 @@ namespace oneshot
             nullptr);
         if (!notification->markupButton)
         {
-            TraceNotificationFailure(L"CreateWindowExW(markupButton)", GetLastError());
+            recordFailure(L"CreateWindowExW(markupButton)", GetLastError());
             DestroyWindow(notification->hwnd);
             return;
         }
+        _debugState.markupButtonCreated = true;
 
         ConfigureButton(notification->dismissButton, notification->uiFont);
         ConfigureButton(notification->markupButton, notification->uiBoldFont);
@@ -694,20 +742,28 @@ namespace oneshot
         SetWindowSubclass(notification->markupButton, NotificationButtonProc, 0, 0);
 
         ApplyLayout(notification.get());
-        ShowWindow(notification->hwnd, SW_SHOWNOACTIVATE);
+        _debugState.showWindowResult = ShowWindow(notification->hwnd, SW_SHOWNOACTIVATE) ? 1 : 0;
 
         _notifications.insert(_notifications.begin(), std::move(notification));
         RepositionAll();
         UpdateWindow(_notifications.front()->hwnd);
+        RedrawWindow(_notifications.front()->hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
 
         RECT windowRect{};
         if (GetWindowRect(_notifications.front()->hwnd, &windowRect))
         {
+            _debugState.windowRect = windowRect;
+            _debugState.windowVisible = IsWindowVisible(_notifications.front()->hwnd) != FALSE;
             TraceNotificationVisibility(_notifications.front()->hwnd, windowRect);
+            if (!_debugState.windowVisible && _debugState.lastFailedStep.empty())
+            {
+                _debugState.lastFailedStep = L"visibility-check";
+                _debugState.lastErrorText = L"Notification window was created but is not visible after show.";
+            }
         }
         else
         {
-            TraceNotificationFailure(L"GetWindowRect(notification)", GetLastError());
+            recordFailure(L"GetWindowRect(notification)", GetLastError());
         }
     }
 
@@ -790,7 +846,14 @@ namespace oneshot
             const int width = notification->layout.windowWidth;
             const int height = notification->layout.windowHeight;
             const int left = workArea.right - kNotificationMargin - width;
-            SetWindowPos(notification->hwnd, HWND_TOPMOST, left, top, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            if (!SetWindowPos(notification->hwnd, HWND_TOPMOST, left, top, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW))
+            {
+                const DWORD error = GetLastError();
+                _debugState.lastFailedStep = L"SetWindowPos(notification)";
+                _debugState.lastErrorCode = error;
+                _debugState.lastErrorText = DescribeWindowsError(error);
+                TraceNotificationFailure(L"SetWindowPos(notification)", error);
+            }
             top += height + kNotificationGap;
         }
     }

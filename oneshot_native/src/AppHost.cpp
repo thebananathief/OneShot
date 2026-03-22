@@ -272,6 +272,10 @@ namespace oneshot
         }
 
         _notificationManager.Show(_hwnd, std::move(*capture), savedPath, dragPath);
+        if (_notificationManager.GetDebugState().showAttempted && !_notificationManager.GetDebugState().windowVisible)
+        {
+            _tray.ShowBalloon(L"OneShot", L"Screenshot saved, but notification failed to display.");
+        }
         resetSnapshotActive();
     }
 
@@ -303,7 +307,7 @@ namespace oneshot
         }
         else if (envelope.command == kCommandDiagnostics)
         {
-            response.message = _diagnostics.BuildDiagnosticsText(_startupService.IsEnabled(), _snapshotActive.load());
+            response.message = _diagnostics.BuildDiagnosticsText(_startupService.IsEnabled(), _snapshotActive.load(), _notificationManager.GetDebugState());
         }
         else if (envelope.command == kCommandPing)
         {
@@ -325,7 +329,7 @@ namespace oneshot
 
     void AppHost::ShowDiagnosticsAndExit() const
     {
-        WriteConsoleText(_diagnostics.BuildDiagnosticsText(_startupService.IsEnabled(), _snapshotActive.load()));
+        WriteConsoleText(_diagnostics.BuildDiagnosticsText(_startupService.IsEnabled(), _snapshotActive.load(), _notificationManager.GetDebugState()));
     }
 
     void AppHost::InstallStartupAndExit() const
@@ -383,7 +387,7 @@ namespace oneshot
                 self->HandleSnapshotRequested();
                 return 0;
             case kTrayMenuDiagnostics:
-                MessageBoxW(hwnd, self->_diagnostics.BuildDiagnosticsText(self->_startupService.IsEnabled(), self->_snapshotActive.load()).c_str(), kAppName, MB_OK | MB_ICONINFORMATION);
+                MessageBoxW(hwnd, self->_diagnostics.BuildDiagnosticsText(self->_startupService.IsEnabled(), self->_snapshotActive.load(), self->_notificationManager.GetDebugState()).c_str(), kAppName, MB_OK | MB_ICONINFORMATION);
                 return 0;
             case kTrayMenuExit:
                 DestroyWindow(hwnd);

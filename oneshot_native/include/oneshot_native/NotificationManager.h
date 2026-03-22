@@ -7,6 +7,22 @@
 
 namespace oneshot
 {
+    struct NotificationDebugState
+    {
+        std::wstring lastAttemptUtc;
+        std::wstring lastFailedStep;
+        std::wstring lastErrorText;
+        DWORD lastErrorCode{0};
+        bool showAttempted{false};
+        bool windowCreated{false};
+        bool thumbnailCreated{false};
+        bool dismissButtonCreated{false};
+        bool markupButtonCreated{false};
+        int showWindowResult{0};
+        bool windowVisible{false};
+        RECT windowRect{};
+    };
+
     class NotificationManager
     {
     public:
@@ -20,6 +36,7 @@ namespace oneshot
         void CloseNotification(NotificationWindow* notification);
         void StartDrag(NotificationWindow* notification);
         void OpenMarkup(NotificationWindow* notification);
+        [[nodiscard]] const NotificationDebugState& GetDebugState() const noexcept { return _debugState; }
 
     private:
         void RepositionAll();
@@ -29,5 +46,6 @@ namespace oneshot
         MarkupEditorWindow _markupEditor;
         OutputService& _outputService;
         std::vector<std::unique_ptr<NotificationWindow>> _notifications;
+        NotificationDebugState _debugState;
     };
 }
