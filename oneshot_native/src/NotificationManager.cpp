@@ -385,6 +385,8 @@ namespace oneshot
         const bool pressed = (draw.itemState & ODS_SELECTED) != 0;
         const bool focused = (draw.itemState & ODS_FOCUS) != 0;
         const bool dismiss = draw.CtlID == kDismissButtonId;
+        RECT clientRect{};
+        GetClientRect(draw.hwndItem, &clientRect);
 
         COLORREF fill = dismiss ? palette.dangerBackground : palette.accent;
         COLORREF text = palette.text;
@@ -410,13 +412,17 @@ namespace oneshot
             text = RGB(251, 239, 244);
         }
 
-        ui::FillRoundedRect(draw.hDC, draw.rcItem, fill, notification.layout.buttonRadius);
+        HBRUSH backgroundBrush = CreateSolidBrush(notification.backgroundColor);
+        FillRect(draw.hDC, &clientRect, backgroundBrush);
+        DeleteObject(backgroundBrush);
+
+        ui::FillRoundedRect(draw.hDC, clientRect, fill, notification.layout.buttonRadius);
 
         HFONT font = reinterpret_cast<HFONT>(SendMessageW(draw.hwndItem, WM_GETFONT, 0, 0));
         HGDIOBJ oldFont = font ? SelectObject(draw.hDC, font) : nullptr;
         SetBkMode(draw.hDC, TRANSPARENT);
         SetTextColor(draw.hDC, text);
-        RECT textRect = draw.rcItem;
+        RECT textRect = clientRect;
         const wchar_t* glyph = draw.CtlID == kDismissButtonId ? kCloseGlyph : kMarkupGlyph;
         DrawTextW(draw.hDC, glyph, -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
         if (oldFont)
@@ -425,7 +431,7 @@ namespace oneshot
         }
         if (focused)
         {
-            RECT focusRect = draw.rcItem;
+            RECT focusRect = clientRect;
             InflateRect(&focusRect, -4, -4);
             DrawFocusRect(draw.hDC, &focusRect);
         }
@@ -435,6 +441,24 @@ namespace oneshot
     {
         switch (message)
         {
+        case WM_ERASEBKGND:
+        {
+            HDC dc = reinterpret_cast<HDC>(wParam);
+            if (!dc)
+            {
+                return TRUE;
+            }
+
+            auto* notification = reinterpret_cast<NotificationManager::NotificationWindow*>(
+                GetWindowLongPtrW(GetParent(hwnd), GWLP_USERDATA));
+            RECT client{};
+            GetClientRect(hwnd, &client);
+            const COLORREF color = notification ? notification->backgroundColor : ui::GetPalette().panelBackground;
+            HBRUSH brush = CreateSolidBrush(color);
+            FillRect(dc, &client, brush);
+            DeleteObject(brush);
+            return TRUE;
+        }
         case WM_MOUSEMOVE:
             TrackHover(hwnd);
             break;
