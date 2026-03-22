@@ -83,13 +83,34 @@ namespace oneshot::ui
 
     void FrameRoundedRect(HDC dc, const RECT& rect, COLORREF color, int radius, int thickness)
     {
-        HPEN pen = CreatePen(PS_SOLID, thickness, color);
-        HGDIOBJ oldPen = SelectObject(dc, pen);
-        HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
-        RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, radius, radius);
-        SelectObject(dc, oldBrush);
-        SelectObject(dc, oldPen);
-        DeleteObject(pen);
+        if (thickness <= 0)
+        {
+            return;
+        }
+
+        HRGN outer = CreateRoundRectRgn(rect.left, rect.top, rect.right + 1, rect.bottom + 1, radius, radius);
+        if (!outer)
+        {
+            return;
+        }
+
+        RECT inner = rect;
+        InflateRect(&inner, -thickness, -thickness);
+        if (inner.right > inner.left && inner.bottom > inner.top)
+        {
+            const int innerRadius = std::max(0, radius - (thickness * 2));
+            HRGN innerRegion = CreateRoundRectRgn(inner.left, inner.top, inner.right + 1, inner.bottom + 1, innerRadius, innerRadius);
+            if (innerRegion)
+            {
+                CombineRgn(outer, outer, innerRegion, RGN_DIFF);
+                DeleteObject(innerRegion);
+            }
+        }
+
+        HBRUSH brush = CreateSolidBrush(color);
+        FillRgn(dc, outer, brush);
+        DeleteObject(brush);
+        DeleteObject(outer);
     }
 
     void ApplyRoundedWindowRegion(HWND hwnd, int radius)
