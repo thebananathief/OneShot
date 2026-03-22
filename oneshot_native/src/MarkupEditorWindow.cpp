@@ -1281,8 +1281,16 @@ namespace oneshot
             text = RGB(122, 132, 147);
         }
 
+        HBRUSH surfaceBrush = CreateSolidBrush(kToolbarPanel);
+        FillRect(draw.hDC, &rect, surfaceBrush);
+        DeleteObject(surfaceBrush);
+
         FillRoundedRect(draw.hDC, paintRect, background, 12);
-        FrameRoundedRect(draw.hDC, paintRect, border, 12);
+        const bool drawBorder = !IsActionButton(draw.CtlID);
+        if (drawBorder)
+        {
+            FrameRoundedRect(draw.hDC, paintRect, border, 12);
+        }
 
         std::wstring label;
         if (draw.CtlID == kStrokeColorId)
