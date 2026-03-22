@@ -77,6 +77,26 @@ namespace
         Accent
     };
 
+    struct StrokeToolSettings
+    {
+        COLORREF color{RGB(255, 0, 0)};
+        int thickness{3};
+    };
+
+    struct ShapeToolSettings
+    {
+        StrokeToolSettings stroke{};
+        COLORREF fillColor{RGB(255, 224, 224)};
+        bool fillEnabled{true};
+    };
+
+    struct TextToolSettings
+    {
+        COLORREF color{RGB(255, 0, 0)};
+        int fontSize{22};
+        std::wstring fontFace{L"Segoe UI"};
+    };
+
     struct ToolbarLayout
     {
         RECT toolsGroup{};
@@ -200,7 +220,7 @@ namespace
         ToolbarLayout layout{};
         layout.toolsGroup = MakeRect(margin, top, margin + ScaleForDpi(470, dpi), bottom);
         layout.optionsGroup = MakeRect(layout.toolsGroup.right + ScaleForDpi(12, dpi), top, layout.toolsGroup.right + ScaleForDpi(12, dpi) + ScaleForDpi(470, dpi), bottom);
-        layout.actionsGroup = MakeRect(client.right - margin - ScaleForDpi(300, dpi), top, client.right - margin, bottom);
+        layout.actionsGroup = MakeRect(client.right - margin - ScaleForDpi(390, dpi), top, client.right - margin, bottom);
         return layout;
     }
 
@@ -266,12 +286,13 @@ namespace oneshot
         POINT dragCurrent{};
         std::vector<POINT> polygonPoints;
         bool polygonInProgress{false};
-        COLORREF strokeColor{RGB(255, 0, 0)};
-        COLORREF fillColor{RGB(255, 224, 224)};
-        COLORREF fontColor{RGB(255, 0, 0)};
-        int thickness{3};
-        int fontSize{22};
-        bool fillShapes{true};
+        StrokeToolSettings penSettings{};
+        StrokeToolSettings lineSettings{};
+        StrokeToolSettings arrowSettings{};
+        ShapeToolSettings rectangleSettings{};
+        ShapeToolSettings ellipseSettings{};
+        ShapeToolSettings polygonSettings{};
+        TextToolSettings textSettings{};
         bool finished{false};
         OutputService* outputService{nullptr};
         COLORREF customColors[16]{};
@@ -286,7 +307,6 @@ namespace oneshot
         POINT middlePanStart{};
         double middlePanOffsetX{0.0};
         double middlePanOffsetY{0.0};
-        std::wstring fontFace{L"Segoe UI"};
         HFONT uiFont{nullptr};
         HFONT uiBoldFont{nullptr};
         HDC canvasBackBufferDc{nullptr};
@@ -484,7 +504,7 @@ namespace oneshot
         return mapped;
     }
 
-    static void DrawPolygonPreview(HDC hdc, const RECT& canvasRect, const CapturedImage& image, double zoom, const std::vector<POINT>& polygonPoints, std::optional<POINT> currentPoint)
+    static void DrawPolygonPreview(HDC hdc, const RECT& canvasRect, double zoom, const std::vector<POINT>& polygonPoints, std::optional<POINT> currentPoint, COLORREF color, int thickness)
     {
         if (polygonPoints.empty())
         {
@@ -505,7 +525,13 @@ namespace oneshot
 
         if (preview.size() >= 2)
         {
+            HPEN pen = CreatePen(PS_SOLID, std::max(1, thickness), color);
+            HGDIOBJ oldPen = SelectObject(hdc, pen);
+            HGDIOBJ oldBrush = SelectObject(hdc, GetStockObject(HOLLOW_BRUSH));
             Polyline(hdc, preview.data(), static_cast<int>(preview.size()));
+            SelectObject(hdc, oldBrush);
+            SelectObject(hdc, oldPen);
+            DeleteObject(pen);
         }
     }
 
@@ -570,6 +596,255 @@ namespace oneshot
         if (selection == CB_ERR && !fonts.empty())
         {
             SendMessageW(combo, CB_SETCURSEL, 0, 0);
+        }
+    }
+
+    static StrokeToolSettings& GetStrokeSettings(MarkupEditorWindow::State& state, MarkupEditorWindow::Tool tool)
+    {
+        switch (tool)
+        {
+        case MarkupEditorWindow::Tool::Pen:
+            return state.penSettings;
+        case MarkupEditorWindow::Tool::Line:
+            return state.lineSettings;
+        case MarkupEditorWindow::Tool::Arrow:
+            return state.arrowSettings;
+        case MarkupEditorWindow::Tool::Rectangle:
+            return state.rectangleSettings.stroke;
+        case MarkupEditorWindow::Tool::Ellipse:
+            return state.ellipseSettings.stroke;
+        case MarkupEditorWindow::Tool::Polygon:
+            return state.polygonSettings.stroke;
+        case MarkupEditorWindow::Tool::Text:
+        default:
+            return state.penSettings;
+        }
+    }
+
+    static const StrokeToolSettings& GetStrokeSettings(const MarkupEditorWindow::State& state, MarkupEditorWindow::Tool tool)
+    {
+        switch (tool)
+        {
+        case MarkupEditorWindow::Tool::Pen:
+            return state.penSettings;
+        case MarkupEditorWindow::Tool::Line:
+            return state.lineSettings;
+        case MarkupEditorWindow::Tool::Arrow:
+            return state.arrowSettings;
+        case MarkupEditorWindow::Tool::Rectangle:
+            return state.rectangleSettings.stroke;
+        case MarkupEditorWindow::Tool::Ellipse:
+            return state.ellipseSettings.stroke;
+        case MarkupEditorWindow::Tool::Polygon:
+            return state.polygonSettings.stroke;
+        case MarkupEditorWindow::Tool::Text:
+        default:
+            return state.penSettings;
+        }
+    }
+
+    static ShapeToolSettings* GetShapeSettings(MarkupEditorWindow::State& state, MarkupEditorWindow::Tool tool)
+    {
+        switch (tool)
+        {
+        case MarkupEditorWindow::Tool::Rectangle:
+            return &state.rectangleSettings;
+        case MarkupEditorWindow::Tool::Ellipse:
+            return &state.ellipseSettings;
+        case MarkupEditorWindow::Tool::Polygon:
+            return &state.polygonSettings;
+        default:
+            return nullptr;
+        }
+    }
+
+    static const ShapeToolSettings* GetShapeSettings(const MarkupEditorWindow::State& state, MarkupEditorWindow::Tool tool)
+    {
+        switch (tool)
+        {
+        case MarkupEditorWindow::Tool::Rectangle:
+            return &state.rectangleSettings;
+        case MarkupEditorWindow::Tool::Ellipse:
+            return &state.ellipseSettings;
+        case MarkupEditorWindow::Tool::Polygon:
+            return &state.polygonSettings;
+        default:
+            return nullptr;
+        }
+    }
+
+    static TextToolSettings& GetTextSettings(MarkupEditorWindow::State& state)
+    {
+        return state.textSettings;
+    }
+
+    static const TextToolSettings& GetTextSettings(const MarkupEditorWindow::State& state)
+    {
+        return state.textSettings;
+    }
+
+    static bool ToolUsesStrokeOptions(MarkupEditorWindow::Tool tool)
+    {
+        return tool != MarkupEditorWindow::Tool::Text;
+    }
+
+    static bool ToolUsesFillOptions(MarkupEditorWindow::Tool tool)
+    {
+        return tool == MarkupEditorWindow::Tool::Rectangle
+            || tool == MarkupEditorWindow::Tool::Ellipse
+            || tool == MarkupEditorWindow::Tool::Polygon;
+    }
+
+    static bool ToolUsesTextOptions(MarkupEditorWindow::Tool tool)
+    {
+        return tool == MarkupEditorWindow::Tool::Text;
+    }
+
+    static std::wstring FormatHexColor(COLORREF color)
+    {
+        wchar_t buffer[16]{};
+        swprintf_s(buffer, L"#%02X%02X%02X", GetRValue(color), GetGValue(color), GetBValue(color));
+        return buffer;
+    }
+
+    static const wchar_t* GetToolOptionsLabel(MarkupEditorWindow::Tool tool)
+    {
+        switch (tool)
+        {
+        case MarkupEditorWindow::Tool::Pen:
+            return L"PEN OPTIONS";
+        case MarkupEditorWindow::Tool::Line:
+            return L"LINE OPTIONS";
+        case MarkupEditorWindow::Tool::Arrow:
+            return L"ARROW OPTIONS";
+        case MarkupEditorWindow::Tool::Rectangle:
+            return L"RECT OPTIONS";
+        case MarkupEditorWindow::Tool::Ellipse:
+            return L"ELLIPSE OPTIONS";
+        case MarkupEditorWindow::Tool::Polygon:
+            return L"POLY OPTIONS";
+        case MarkupEditorWindow::Tool::Text:
+            return L"TEXT OPTIONS";
+        default:
+            return L"OPTIONS";
+        }
+    }
+
+    static std::wstring GetToolMetaText(const MarkupEditorWindow::State& state)
+    {
+        std::wstring meta;
+        switch (state.tool)
+        {
+        case MarkupEditorWindow::Tool::Pen:
+        case MarkupEditorWindow::Tool::Line:
+        case MarkupEditorWindow::Tool::Arrow:
+        {
+            const auto& stroke = GetStrokeSettings(state, state.tool);
+            meta = std::wstring(GetToolOptionsLabel(state.tool));
+            meta += L"  ";
+            meta += FormatHexColor(stroke.color);
+            meta += L"  ";
+            meta += std::to_wstring(stroke.thickness);
+            meta += L"px";
+            break;
+        }
+        case MarkupEditorWindow::Tool::Rectangle:
+        case MarkupEditorWindow::Tool::Ellipse:
+        case MarkupEditorWindow::Tool::Polygon:
+        {
+            const auto& shape = *GetShapeSettings(state, state.tool);
+            meta = std::wstring(GetToolOptionsLabel(state.tool));
+            meta += L"  Stroke ";
+            meta += FormatHexColor(shape.stroke.color);
+            meta += L" ";
+            meta += std::to_wstring(shape.stroke.thickness);
+            meta += L"px  Fill ";
+            meta += shape.fillEnabled ? L"On " : L"Off ";
+            meta += FormatHexColor(shape.fillColor);
+            break;
+        }
+        case MarkupEditorWindow::Tool::Text:
+        {
+            const auto& text = GetTextSettings(state);
+            meta = L"TEXT OPTIONS  ";
+            meta += FormatHexColor(text.color);
+            meta += L"  ";
+            meta += std::to_wstring(text.fontSize);
+            meta += L"pt  ";
+            meta += text.fontFace;
+            break;
+        }
+        default:
+            break;
+        }
+
+        meta += L"   Ctrl+Wheel zoom   Middle mouse pan";
+        return meta;
+    }
+
+    static bool ShouldShowToolControl(MarkupEditorWindow::Tool tool, int id)
+    {
+        switch (id)
+        {
+        case kStrokeColorId:
+        case kThicknessDownId:
+        case kThicknessUpId:
+            return ToolUsesStrokeOptions(tool);
+        case kFillColorId:
+        case kFillToggleId:
+            return ToolUsesFillOptions(tool);
+        case kTextColorId:
+        case kFontDownId:
+        case kFontUpId:
+        case kFontComboId:
+            return ToolUsesTextOptions(tool);
+        default:
+            return true;
+        }
+    }
+
+    static void SetControlVisible(HWND control, bool visible)
+    {
+        if (!control)
+        {
+            return;
+        }
+
+        ShowWindow(control, visible ? SW_SHOWNA : SW_HIDE);
+        EnableWindow(control, visible);
+    }
+
+    static void SyncToolOptionControls(MarkupEditorWindow::State& state)
+    {
+        if (!state.hwnd)
+        {
+            return;
+        }
+
+        for (const int id : { kStrokeColorId, kFillColorId, kTextColorId, kFillToggleId, kThicknessDownId, kThicknessUpId, kFontDownId, kFontUpId })
+        {
+            SetControlVisible(GetDlgItem(state.hwnd, id), ShouldShowToolControl(state.tool, id));
+        }
+
+        SetControlVisible(state.fontCombo, ShouldShowToolControl(state.tool, kFontComboId));
+
+        if (const ShapeToolSettings* shape = GetShapeSettings(state, state.tool))
+        {
+            CheckDlgButton(state.hwnd, kFillToggleId, shape->fillEnabled ? BST_CHECKED : BST_UNCHECKED);
+        }
+        else
+        {
+            CheckDlgButton(state.hwnd, kFillToggleId, BST_UNCHECKED);
+        }
+
+        if (state.fontCombo)
+        {
+            const auto& text = GetTextSettings(state);
+            const LRESULT selection = SendMessageW(state.fontCombo, CB_SELECTSTRING, static_cast<WPARAM>(-1), reinterpret_cast<LPARAM>(text.fontFace.c_str()));
+            if (selection == CB_ERR)
+            {
+                SendMessageW(state.fontCombo, CB_SETCURSEL, 0, 0);
+            }
         }
     }
 
@@ -670,20 +945,43 @@ namespace oneshot
         placeButton(kToolTextId, 54);
 
         left = toolbar.optionsGroup.left + ScaleForDpi(12, dpi);
-        placeButton(kStrokeColorId, 76);
-        placeButton(kFillColorId, 62);
-        placeButton(kTextColorId, 66);
-        placeButton(kFillToggleId, 52);
-        placeButton(kThicknessDownId, 40);
-        placeButton(kThicknessUpId, 40);
-        placeButton(kFontDownId, 40);
-        placeButton(kFontUpId, 40);
-        placeButton(kFitId, 46);
+        const auto placeOptionButton = [&](int id, int width)
+        {
+            HWND control = GetDlgItem(state.hwnd, id);
+            if (!control)
+            {
+                return;
+            }
+
+            const bool visible = ShouldShowToolControl(state.tool, id);
+            SetControlVisible(control, visible);
+            if (!visible)
+            {
+                return;
+            }
+
+            MoveWindow(control, left, buttonTop, ScaleForDpi(width, dpi), buttonHeight, TRUE);
+            left += ScaleForDpi(width, dpi) + buttonGap;
+        };
+
+        placeOptionButton(kStrokeColorId, 92);
+        placeOptionButton(kFillColorId, 74);
+        placeOptionButton(kTextColorId, 76);
+        placeOptionButton(kFillToggleId, 64);
+        placeOptionButton(kThicknessDownId, 44);
+        placeOptionButton(kThicknessUpId, 44);
+        placeOptionButton(kFontDownId, 44);
+        placeOptionButton(kFontUpId, 44);
 
         HWND combo = state.fontCombo;
         if (combo)
         {
-            MoveWindow(combo, toolbar.actionsGroup.left + ScaleForDpi(12, dpi), buttonTop, ScaleForDpi(148, dpi), ScaleForDpi(280, dpi), TRUE);
+            const bool visible = ShouldShowToolControl(state.tool, kFontComboId);
+            SetControlVisible(combo, visible);
+            if (visible)
+            {
+                MoveWindow(combo, left, buttonTop, ScaleForDpi(168, dpi), ScaleForDpi(280, dpi), TRUE);
+            }
         }
 
         int right = toolbar.actionsGroup.right - ScaleForDpi(12, dpi);
@@ -706,6 +1004,7 @@ namespace oneshot
         placeActionButton(kCopyId, 58);
         placeActionButton(kRedoId, 58);
         placeActionButton(kUndoId, 58);
+        placeActionButton(kFitId, 46);
 
         if (state.canvas)
         {
@@ -815,22 +1114,27 @@ namespace oneshot
         std::wstring label;
         if (draw.CtlID == kStrokeColorId)
         {
-            DrawColorSwatch(draw.hDC, rect, state.strokeColor);
-            label = FormatColorLabel(L"Stroke", state.strokeColor);
+            const auto& stroke = GetStrokeSettings(state, state.tool);
+            DrawColorSwatch(draw.hDC, rect, stroke.color);
+            label = FormatColorLabel(L"Stroke", stroke.color);
         }
         else if (draw.CtlID == kFillColorId)
         {
-            DrawColorSwatch(draw.hDC, rect, state.fillColor);
-            label = FormatColorLabel(L"Fill", state.fillColor);
+            const ShapeToolSettings* shape = GetShapeSettings(state, state.tool);
+            const COLORREF color = shape ? shape->fillColor : RGB(255, 224, 224);
+            DrawColorSwatch(draw.hDC, rect, color);
+            label = FormatColorLabel(L"Fill", color);
         }
         else if (draw.CtlID == kTextColorId)
         {
-            DrawColorSwatch(draw.hDC, rect, state.fontColor);
-            label = FormatColorLabel(L"Text", state.fontColor);
+            const auto& textSettings = GetTextSettings(state);
+            DrawColorSwatch(draw.hDC, rect, textSettings.color);
+            label = FormatColorLabel(L"Text", textSettings.color);
         }
         else if (draw.CtlID == kFillToggleId)
         {
-            label = state.fillShapes ? L"Fill On" : L"Fill Off";
+            const ShapeToolSettings* shape = GetShapeSettings(state, state.tool);
+            label = (shape && shape->fillEnabled) ? L"Fill On" : L"Fill Off";
         }
         else if (draw.CtlID == kThicknessDownId)
         {
@@ -931,9 +1235,9 @@ namespace oneshot
             }
 
             MarkupEditorWindow::State fakeState{};
-            fakeState.strokeColor = kAccentColor;
-            fakeState.fillColor = RGB(120, 156, 204);
-            fakeState.fontColor = kTextColor;
+            fakeState.penSettings.color = kAccentColor;
+            fakeState.rectangleSettings.fillColor = RGB(120, 156, 204);
+            fakeState.textSettings.color = kTextColor;
             DrawThemedButton(fakeState, *draw);
             return TRUE;
         }
@@ -1105,10 +1409,17 @@ namespace oneshot
         HDC memoryDc = CreateCompatibleDC(screenDc);
         HGDIOBJ previous = SelectObject(memoryDc, state.currentImage.bitmap);
 
-        HPEN pen = CreatePen(PS_SOLID, state.thickness, state.strokeColor);
+        const auto& stroke = GetStrokeSettings(state, state.tool);
+        HPEN pen = CreatePen(PS_SOLID, stroke.thickness, stroke.color);
         HGDIOBJ oldPen = SelectObject(memoryDc, pen);
-        HBRUSH fillBrush = CreateSolidBrush(state.fillColor);
-        HGDIOBJ oldBrush = SelectObject(memoryDc, state.fillShapes ? fillBrush : GetStockObject(HOLLOW_BRUSH));
+        HBRUSH fillBrush = nullptr;
+        HGDIOBJ oldBrush = SelectObject(memoryDc, GetStockObject(HOLLOW_BRUSH));
+        if (const ShapeToolSettings* shape = GetShapeSettings(state, state.tool))
+        {
+            fillBrush = CreateSolidBrush(shape->fillColor);
+            SelectObject(memoryDc, oldBrush);
+            oldBrush = SelectObject(memoryDc, shape->fillEnabled ? fillBrush : GetStockObject(HOLLOW_BRUSH));
+        }
 
         switch (state.tool)
         {
@@ -1120,9 +1431,13 @@ namespace oneshot
             SelectObject(memoryDc, oldPen);
             DeleteObject(pen);
             SelectObject(memoryDc, oldBrush);
-            DeleteObject(fillBrush);
-            MarkupEditorWindow::DrawArrow(memoryDc, startPoint, endPoint, state.strokeColor, state.thickness);
+            if (fillBrush)
+            {
+                DeleteObject(fillBrush);
+            }
+            MarkupEditorWindow::DrawArrow(memoryDc, startPoint, endPoint, stroke.color, stroke.thickness);
             pen = nullptr;
+            fillBrush = nullptr;
             break;
         case MarkupEditorWindow::Tool::Rectangle:
         {
@@ -1147,7 +1462,10 @@ namespace oneshot
         }
 
         SelectObject(memoryDc, oldBrush);
-        DeleteObject(fillBrush);
+        if (fillBrush)
+        {
+            DeleteObject(fillBrush);
+        }
         if (pen)
         {
             SelectObject(memoryDc, oldPen);
@@ -1327,7 +1645,8 @@ namespace oneshot
         if (state.tool == MarkupEditorWindow::Tool::Polygon && state.polygonInProgress)
         {
             const POINT current = ClientToImagePoint(state.imageRect, state.currentImage, state.zoom, state.dragCurrent);
-            DrawPolygonPreview(targetDc, canvasRect, state.currentImage, state.zoom, state.polygonPoints, current);
+            const auto& polygon = state.polygonSettings;
+            DrawPolygonPreview(targetDc, canvasRect, state.zoom, state.polygonPoints, current, polygon.stroke.color, polygon.stroke.thickness);
         }
 
         if (state.previewActive && state.tool != MarkupEditorWindow::Tool::Pen && state.tool != MarkupEditorWindow::Tool::Polygon)
@@ -1337,9 +1656,17 @@ namespace oneshot
             POINT previewStart = ImagePointToClientPoint(canvasRect, state.zoom, start);
             POINT previewEnd = ImagePointToClientPoint(canvasRect, state.zoom, end);
 
-            HPEN pen = CreatePen(PS_DOT, 2, state.strokeColor);
+            const auto& stroke = GetStrokeSettings(state, state.tool);
+            HPEN pen = CreatePen(PS_SOLID, std::max(1, stroke.thickness), stroke.color);
             HGDIOBJ oldPen = SelectObject(targetDc, pen);
+            HBRUSH fillBrush = nullptr;
             HGDIOBJ oldBrush = SelectObject(targetDc, GetStockObject(HOLLOW_BRUSH));
+            if (const ShapeToolSettings* shape = GetShapeSettings(state, state.tool))
+            {
+                fillBrush = CreateSolidBrush(shape->fillColor);
+                SelectObject(targetDc, oldBrush);
+                oldBrush = SelectObject(targetDc, shape->fillEnabled ? fillBrush : GetStockObject(HOLLOW_BRUSH));
+            }
             const bool keepAspectRatio = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
             switch (state.tool)
             {
@@ -1358,7 +1685,7 @@ namespace oneshot
                 {
                     previewEnd = SnapLineEndpoint(previewStart, previewEnd);
                 }
-                MarkupEditorWindow::DrawArrow(targetDc, previewStart, previewEnd, state.strokeColor, 2);
+                MarkupEditorWindow::DrawArrow(targetDc, previewStart, previewEnd, stroke.color, stroke.thickness);
                 break;
             case MarkupEditorWindow::Tool::Rectangle:
             {
@@ -1377,6 +1704,10 @@ namespace oneshot
             }
             SelectObject(targetDc, oldBrush);
             SelectObject(targetDc, oldPen);
+            if (fillBrush)
+            {
+                DeleteObject(fillBrush);
+            }
             DeleteObject(pen);
         }
 
@@ -1493,12 +1824,12 @@ namespace oneshot
             CreateWindowExW(0, L"Button", L"Cancel", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCancelId)), GetModuleHandleW(nullptr), nullptr);
             state->fontCombo = CreateWindowExW(0, L"ComboBox", nullptr, WS_CHILD | WS_VISIBLE | WS_VSCROLL | CBS_DROPDOWNLIST | WS_TABSTOP, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFontComboId)), GetModuleHandleW(nullptr), nullptr);
             state->canvas = CreateWindowExW(0, L"OneShotNative.MarkupCanvas", L"", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, hwnd, nullptr, GetModuleHandleW(nullptr), state);
-            PopulateFontCombo(state->fontCombo, state->fontFace);
+            PopulateFontCombo(state->fontCombo, state->textSettings.fontFace);
             ApplyToolbarFonts(*state);
+            SyncToolOptionControls(*state);
             LayoutToolbarControls(*state);
             FitImageToViewport(*state);
             UpdateToolButtons(*state);
-            CheckDlgButton(hwnd, kFillToggleId, BST_CHECKED);
             return 0;
         case WM_SIZE:
             if (state->canvas)
@@ -1531,13 +1862,62 @@ namespace oneshot
         case WM_COMMAND:
             switch (LOWORD(wParam))
             {
-            case kToolPenId: state->tool = Tool::Pen; UpdateToolButtons(*state); InvalidateRect(hwnd, nullptr, FALSE); return 0;
-            case kToolLineId: state->tool = Tool::Line; UpdateToolButtons(*state); InvalidateRect(hwnd, nullptr, FALSE); return 0;
-            case kToolArrowId: state->tool = Tool::Arrow; UpdateToolButtons(*state); InvalidateRect(hwnd, nullptr, FALSE); return 0;
-            case kToolRectId: state->tool = Tool::Rectangle; UpdateToolButtons(*state); InvalidateRect(hwnd, nullptr, FALSE); return 0;
-            case kToolEllipseId: state->tool = Tool::Ellipse; UpdateToolButtons(*state); InvalidateRect(hwnd, nullptr, FALSE); return 0;
-            case kToolPolygonId: state->tool = Tool::Polygon; UpdateToolButtons(*state); InvalidateRect(hwnd, nullptr, FALSE); return 0;
-            case kToolTextId: state->tool = Tool::Text; UpdateToolButtons(*state); InvalidateRect(hwnd, nullptr, FALSE); return 0;
+            case kToolPenId:
+                state->tool = Tool::Pen;
+                UpdateToolButtons(*state);
+                SyncToolOptionControls(*state);
+                LayoutToolbarControls(*state);
+                InvalidateRect(hwnd, nullptr, FALSE);
+                InvalidateCanvas(*state);
+                return 0;
+            case kToolLineId:
+                state->tool = Tool::Line;
+                UpdateToolButtons(*state);
+                SyncToolOptionControls(*state);
+                LayoutToolbarControls(*state);
+                InvalidateRect(hwnd, nullptr, FALSE);
+                InvalidateCanvas(*state);
+                return 0;
+            case kToolArrowId:
+                state->tool = Tool::Arrow;
+                UpdateToolButtons(*state);
+                SyncToolOptionControls(*state);
+                LayoutToolbarControls(*state);
+                InvalidateRect(hwnd, nullptr, FALSE);
+                InvalidateCanvas(*state);
+                return 0;
+            case kToolRectId:
+                state->tool = Tool::Rectangle;
+                UpdateToolButtons(*state);
+                SyncToolOptionControls(*state);
+                LayoutToolbarControls(*state);
+                InvalidateRect(hwnd, nullptr, FALSE);
+                InvalidateCanvas(*state);
+                return 0;
+            case kToolEllipseId:
+                state->tool = Tool::Ellipse;
+                UpdateToolButtons(*state);
+                SyncToolOptionControls(*state);
+                LayoutToolbarControls(*state);
+                InvalidateRect(hwnd, nullptr, FALSE);
+                InvalidateCanvas(*state);
+                return 0;
+            case kToolPolygonId:
+                state->tool = Tool::Polygon;
+                UpdateToolButtons(*state);
+                SyncToolOptionControls(*state);
+                LayoutToolbarControls(*state);
+                InvalidateRect(hwnd, nullptr, FALSE);
+                InvalidateCanvas(*state);
+                return 0;
+            case kToolTextId:
+                state->tool = Tool::Text;
+                UpdateToolButtons(*state);
+                SyncToolOptionControls(*state);
+                LayoutToolbarControls(*state);
+                InvalidateRect(hwnd, nullptr, FALSE);
+                InvalidateCanvas(*state);
+                return 0;
             case kUndoId:
                 if (!state->undoStack.empty())
                 {
@@ -1573,44 +1953,80 @@ namespace oneshot
                 return 0;
             }
             case kStrokeColorId:
-                ChooseEditorColor(hwnd, state->strokeColor, state->customColors);
-                InvalidateRect(hwnd, nullptr, FALSE);
-                InvalidateCanvas(*state);
+                if (ToolUsesStrokeOptions(state->tool))
+                {
+                    auto& stroke = GetStrokeSettings(*state, state->tool);
+                    if (ChooseEditorColor(hwnd, stroke.color, state->customColors))
+                    {
+                        InvalidateRect(hwnd, nullptr, FALSE);
+                        InvalidateCanvas(*state);
+                    }
+                }
                 return 0;
             case kFillColorId:
-                ChooseEditorColor(hwnd, state->fillColor, state->customColors);
-                InvalidateRect(hwnd, nullptr, FALSE);
-                InvalidateCanvas(*state);
+                if (ShapeToolSettings* shape = GetShapeSettings(*state, state->tool))
+                {
+                    if (ChooseEditorColor(hwnd, shape->fillColor, state->customColors))
+                    {
+                        InvalidateRect(hwnd, nullptr, FALSE);
+                        InvalidateCanvas(*state);
+                    }
+                }
                 return 0;
             case kTextColorId:
-                ChooseEditorColor(hwnd, state->fontColor, state->customColors);
-                InvalidateRect(hwnd, nullptr, FALSE);
-                InvalidateCanvas(*state);
+                if (ToolUsesTextOptions(state->tool))
+                {
+                    auto& text = GetTextSettings(*state);
+                    if (ChooseEditorColor(hwnd, text.color, state->customColors))
+                    {
+                        InvalidateRect(hwnd, nullptr, FALSE);
+                        InvalidateCanvas(*state);
+                    }
+                }
                 return 0;
             case kFillToggleId:
-                state->fillShapes = IsDlgButtonChecked(hwnd, kFillToggleId) == BST_CHECKED;
-                InvalidateRect(hwnd, nullptr, FALSE);
-                InvalidateCanvas(*state);
+                if (ShapeToolSettings* shape = GetShapeSettings(*state, state->tool))
+                {
+                    shape->fillEnabled = IsDlgButtonChecked(hwnd, kFillToggleId) == BST_CHECKED;
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    InvalidateCanvas(*state);
+                }
                 return 0;
             case kThicknessDownId:
-                state->thickness = std::max(1, state->thickness - 1);
-                InvalidateRect(hwnd, nullptr, FALSE);
-                InvalidateCanvas(*state);
+                if (ToolUsesStrokeOptions(state->tool))
+                {
+                    auto& stroke = GetStrokeSettings(*state, state->tool);
+                    stroke.thickness = std::max(1, stroke.thickness - 1);
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    InvalidateCanvas(*state);
+                }
                 return 0;
             case kThicknessUpId:
-                state->thickness = std::min(16, state->thickness + 1);
-                InvalidateRect(hwnd, nullptr, FALSE);
-                InvalidateCanvas(*state);
+                if (ToolUsesStrokeOptions(state->tool))
+                {
+                    auto& stroke = GetStrokeSettings(*state, state->tool);
+                    stroke.thickness = std::min(16, stroke.thickness + 1);
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    InvalidateCanvas(*state);
+                }
                 return 0;
             case kFontDownId:
-                state->fontSize = std::max(8, state->fontSize - 2);
-                InvalidateRect(hwnd, nullptr, FALSE);
-                InvalidateCanvas(*state);
+                if (ToolUsesTextOptions(state->tool))
+                {
+                    auto& text = GetTextSettings(*state);
+                    text.fontSize = std::max(8, text.fontSize - 2);
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    InvalidateCanvas(*state);
+                }
                 return 0;
             case kFontUpId:
-                state->fontSize = std::min(96, state->fontSize + 2);
-                InvalidateRect(hwnd, nullptr, FALSE);
-                InvalidateCanvas(*state);
+                if (ToolUsesTextOptions(state->tool))
+                {
+                    auto& text = GetTextSettings(*state);
+                    text.fontSize = std::min(96, text.fontSize + 2);
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    InvalidateCanvas(*state);
+                }
                 return 0;
             case kFitId:
                 state->userAdjustedViewport = false;
@@ -1637,9 +2053,10 @@ namespace oneshot
                 {
                     wchar_t fontName[LF_FACESIZE]{};
                     SendMessageW(state->fontCombo, CB_GETLBTEXT, selection, reinterpret_cast<LPARAM>(fontName));
-                    state->fontFace = fontName;
+                    state->textSettings.fontFace = fontName;
                 }
                 InvalidateRect(hwnd, nullptr, FALSE);
+                InvalidateCanvas(*state);
                 return 0;
             }
             break;
@@ -1685,13 +2102,13 @@ namespace oneshot
             const ToolbarLayout toolbar = BuildToolbarLayout(hwnd);
             HFONT previousFont = static_cast<HFONT>(SelectObject(dc, state->uiBoldFont ? state->uiBoldFont : GetStockObject(DEFAULT_GUI_FONT)));
             DrawToolbarPanel(dc, toolbar.toolsGroup, L"TOOLS");
-            DrawToolbarPanel(dc, toolbar.optionsGroup, L"STYLE");
+            DrawToolbarPanel(dc, toolbar.optionsGroup, GetToolOptionsLabel(state->tool));
             DrawToolbarPanel(dc, toolbar.actionsGroup, L"ACTIONS");
 
             RECT metaRect = MakeRect(18, toolbarRect.bottom - ScaleForDpi(22, GetDpiForWindow(hwnd)), client.right - 18, toolbarRect.bottom - ScaleForDpi(6, GetDpiForWindow(hwnd)));
             SetBkMode(dc, TRANSPARENT);
             SetTextColor(dc, kMutedTextColor);
-            std::wstring meta = L"Thickness " + std::to_wstring(state->thickness) + L"   Font " + std::to_wstring(state->fontSize) + L"pt   Ctrl+Wheel zoom   Middle mouse pan";
+            std::wstring meta = GetToolMetaText(*state);
             DrawTextW(dc, meta.c_str(), static_cast<int>(meta.size()), &metaRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
             SelectObject(dc, previousFont);
             EndPaint(hwnd, &paint);
@@ -1787,8 +2204,9 @@ namespace oneshot
                     HDC memoryDc = CreateCompatibleDC(screenDc);
                     HGDIOBJ previous = SelectObject(memoryDc, state->currentImage.bitmap);
                     SetBkMode(memoryDc, TRANSPARENT);
-                    SetTextColor(memoryDc, state->fontColor);
-                    HFONT font = CreateFontW(state->fontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE, state->fontFace.c_str());
+                    const auto& textSettings = GetTextSettings(*state);
+                    SetTextColor(memoryDc, textSettings.color);
+                    HFONT font = CreateFontW(textSettings.fontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE, textSettings.fontFace.c_str());
                     HGDIOBJ oldFont = SelectObject(memoryDc, font);
                     POINT mapped = ClientToImagePoint(state->imageRect, state->currentImage, state->zoom, point);
                     TextOutW(memoryDc, mapped.x, mapped.y, text->c_str(), static_cast<int>(text->size()));
@@ -1845,7 +2263,8 @@ namespace oneshot
                     HDC screenDc = GetDC(nullptr);
                     HDC memoryDc = CreateCompatibleDC(screenDc);
                     HGDIOBJ previous = SelectObject(memoryDc, state->currentImage.bitmap);
-                    HPEN pen = CreatePen(PS_SOLID, state->thickness, state->strokeColor);
+                    const auto& stroke = GetStrokeSettings(*state, state->tool);
+                    HPEN pen = CreatePen(PS_SOLID, stroke.thickness, stroke.color);
                     HGDIOBJ oldPen = SelectObject(memoryDc, pen);
                     POINT start = ClientToImagePoint(state->imageRect, state->currentImage, state->zoom, state->dragCurrent);
                     POINT end = ClientToImagePoint(state->imageRect, state->currentImage, state->zoom, point);
