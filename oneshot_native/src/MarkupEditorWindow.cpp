@@ -9,7 +9,6 @@
 
 namespace
 {
-    constexpr int kToolbarHeight = 108;
     constexpr int kToolbarGroupHeight = 64;
     constexpr int kMargin = 16;
     constexpr double kMaxZoom = 8.0;
@@ -46,7 +45,11 @@ namespace
     constexpr int kToolbarLabelId = 3100;
     constexpr int kToolbarHeaderInsetY = 8;
     constexpr int kToolbarButtonInsetY = 26;
-    constexpr int kToolbarBottomInset = 28;
+    constexpr int kToolbarGroupGap = 12;
+    constexpr int kToolbarGroupInnerPaddingX = 12;
+    constexpr int kToolbarGroupBottomPadding = 10;
+    constexpr int kToolbarMetaGap = 10;
+    constexpr int kToolbarMetaHeight = 18;
     constexpr int kActionButtonSize = 30;
     constexpr int kActionButtonRadius = 14;
     constexpr int kActionButtonFontPointSize = 13;
@@ -110,11 +113,39 @@ namespace
         std::wstring fontFace{L"Segoe UI"};
     };
 
+    enum class ToolbarLayoutMode
+    {
+        Horizontal,
+        Stacked
+    };
+
+    struct ToolbarControlSpec
+    {
+        int id{0};
+        int width{0};
+        bool isCombo{false};
+    };
+
+    struct ToolbarFlowRow
+    {
+        std::vector<ToolbarControlSpec> items;
+        int width{0};
+    };
+
+    struct ToolbarGroupLayout
+    {
+        RECT panelRect{};
+        RECT contentRect{};
+    };
+
     struct ToolbarLayout
     {
-        RECT toolsGroup{};
-        RECT optionsGroup{};
-        RECT actionsGroup{};
+        ToolbarLayoutMode mode{ToolbarLayoutMode::Horizontal};
+        ToolbarGroupLayout tools{};
+        ToolbarGroupLayout options{};
+        ToolbarGroupLayout actions{};
+        RECT metaRect{};
+        RECT toolbarRect{};
     };
 
 
@@ -264,18 +295,233 @@ namespace
         DrawTextW(dc, label, -1, &labelRect, DT_LEFT | DT_TOP | DT_SINGLELINE);
     }
 
-    ToolbarLayout BuildToolbarLayout(HWND hwnd)
+    std::vector<ToolbarControlSpec> GetToolControlSpecs()
+    {
+        return {
+            { kToolPenId, 54 },
+            { kToolLineId, 54 },
+            { kToolArrowId, 60 },
+            { kToolRectId, 54 },
+            { kToolEllipseId, 68 },
+            { kToolPolygonId, 56 },
+            { kToolTextId, 54 }
+        };
+    }
+
+    bool ToolUsesStrokeToolbarControls(oneshot::MarkupEditorWindow::Tool tool)
+    {
+        return tool != oneshot::MarkupEditorWindow::Tool::Text;
+    }
+
+    bool ToolUsesFillToolbarControls(oneshot::MarkupEditorWindow::Tool tool)
+    {
+        return tool == oneshot::MarkupEditorWindow::Tool::Rectangle
+            || tool == oneshot::MarkupEditorWindow::Tool::Ellipse
+            || tool == oneshot::MarkupEditorWindow::Tool::Polygon;
+    }
+
+    bool ToolUsesTextToolbarControls(oneshot::MarkupEditorWindow::Tool tool)
+    {
+        return tool == oneshot::MarkupEditorWindow::Tool::Text;
+    }
+
+    bool ShouldShowToolbarControl(oneshot::MarkupEditorWindow::Tool tool, int id)
+    {
+        switch (id)
+        {
+        case kStrokeColorId:
+        case kThicknessDownId:
+        case kThicknessUpId:
+            return ToolUsesStrokeToolbarControls(tool);
+        case kFillColorId:
+        case kFillToggleId:
+            return ToolUsesFillToolbarControls(tool);
+        case kTextColorId:
+        case kFontDownId:
+        case kFontUpId:
+        case kFontComboId:
+            return ToolUsesTextToolbarControls(tool);
+        default:
+            return true;
+        }
+    }
+
+    std::vector<ToolbarControlSpec> GetOptionControlSpecs(oneshot::MarkupEditorWindow::Tool tool)
+    {
+        std::vector<ToolbarControlSpec> specs;
+        if (ShouldShowToolbarControl(tool, kStrokeColorId))
+        {
+            specs.push_back({ kStrokeColorId, 92 });
+        }
+        if (ShouldShowToolbarControl(tool, kFillColorId))
+        {
+            specs.push_back({ kFillColorId, 74 });
+        }
+        if (ShouldShowToolbarControl(tool, kTextColorId))
+        {
+            specs.push_back({ kTextColorId, 76 });
+        }
+        if (ShouldShowToolbarControl(tool, kFillToggleId))
+        {
+            specs.push_back({ kFillToggleId, 64 });
+        }
+        if (ShouldShowToolbarControl(tool, kThicknessDownId))
+        {
+            specs.push_back({ kThicknessDownId, 44 });
+        }
+        if (ShouldShowToolbarControl(tool, kThicknessUpId))
+        {
+            specs.push_back({ kThicknessUpId, 44 });
+        }
+        if (ShouldShowToolbarControl(tool, kFontDownId))
+        {
+            specs.push_back({ kFontDownId, 44 });
+        }
+        if (ShouldShowToolbarControl(tool, kFontUpId))
+        {
+            specs.push_back({ kFontUpId, 44 });
+        }
+        if (ShouldShowToolbarControl(tool, kFontComboId))
+        {
+            specs.push_back({ kFontComboId, 168, true });
+        }
+
+        return specs;
+    }
+
+    std::vector<ToolbarControlSpec> GetActionControlSpecs()
+    {
+        return {
+            { kFitId, kActionButtonSize },
+            { kUndoId, kActionButtonSize },
+            { kRedoId, kActionButtonSize },
+            { kCopyId, kActionButtonSize },
+            { kDoneId, kActionButtonSize },
+            { kCancelId, kActionButtonSize }
+        };
+    }
+
+    int GetScaledControlWidth(const ToolbarControlSpec& spec, UINT dpi, int availableWidth = INT_MAX)
+    {
+        return std::min(ScaleForDpi(spec.width, dpi), availableWidth);
+    }
+
+    std::vector<ToolbarFlowRow> BuildFlowRows(const std::vector<ToolbarControlSpec>& specs, int availableWidth, int gap, UINT dpi)
+    {
+        std::vector<ToolbarFlowRow> rows;
+        rows.push_back({});
+        const int clampedWidth = std::max(1, availableWidth);
+
+        for (const auto& spec : specs)
+        {
+            const int itemWidth = GetScaledControlWidth(spec, dpi, clampedWidth);
+            ToolbarFlowRow* row = &rows.back();
+            const int proposedWidth = row->items.empty() ? itemWidth : row->width + gap + itemWidth;
+            if (!row->items.empty() && proposedWidth > clampedWidth)
+            {
+                rows.push_back({});
+                row = &rows.back();
+            }
+
+            row->items.push_back(spec);
+            row->width = row->items.size() == 1 ? itemWidth : row->width + gap + itemWidth;
+        }
+
+        return rows;
+    }
+
+    int MeasureSingleRowWidth(const std::vector<ToolbarControlSpec>& specs, UINT dpi, int gap)
+    {
+        int width = 0;
+        for (const auto& spec : specs)
+        {
+            const int itemWidth = ScaleForDpi(spec.width, dpi);
+            width += itemWidth;
+            if (&spec != &specs.back())
+            {
+                width += gap;
+            }
+        }
+
+        return width;
+    }
+
+    ToolbarGroupLayout BuildToolbarGroupLayout(int left, int top, int width, const std::vector<ToolbarControlSpec>& specs, UINT dpi)
+    {
+        const int innerPaddingX = ScaleForDpi(kToolbarGroupInnerPaddingX, dpi);
+        const int contentTopOffset = ScaleForDpi(kToolbarButtonInsetY, dpi);
+        const int controlHeight = ScaleForDpi(28, dpi);
+        const int gap = ScaleForDpi(6, dpi);
+        const int bottomPadding = ScaleForDpi(kToolbarGroupBottomPadding, dpi);
+        const int contentWidth = std::max(1, width - (innerPaddingX * 2));
+        const auto rows = BuildFlowRows(specs, contentWidth, gap, dpi);
+        const int rowCount = std::max(1, static_cast<int>(rows.size()));
+        const int contentHeight = (rowCount * controlHeight) + ((rowCount - 1) * gap);
+        const int groupHeight = std::max(ScaleForDpi(kToolbarGroupHeight, dpi), contentTopOffset + contentHeight + bottomPadding);
+
+        ToolbarGroupLayout group{};
+        group.panelRect = MakeRect(left, top, left + width, top + groupHeight);
+        group.contentRect = MakeRect(
+            left + innerPaddingX,
+            top + contentTopOffset,
+            left + width - innerPaddingX,
+            top + contentTopOffset + contentHeight);
+        return group;
+    }
+
+    ToolbarLayout BuildToolbarLayout(HWND hwnd, oneshot::MarkupEditorWindow::Tool tool)
     {
         RECT client{};
         GetClientRect(hwnd, &client);
         const UINT dpi = GetDpiForWindow(hwnd);
         const int margin = ScaleForDpi(12, dpi);
         const int top = ScaleForDpi(16, dpi);
-        const int bottom = top + ScaleForDpi(kToolbarGroupHeight, dpi);
+        const int groupGap = ScaleForDpi(kToolbarGroupGap, dpi);
+        const int metaGap = ScaleForDpi(kToolbarMetaGap, dpi);
+        const int metaHeight = ScaleForDpi(kToolbarMetaHeight, dpi);
+        const int toolbarBottomInset = ScaleForDpi(10, dpi);
+        const int availableWidth = std::max(1, static_cast<int>(client.right) - (margin * 2));
+
+        const auto toolSpecs = GetToolControlSpecs();
+        const auto optionSpecs = GetOptionControlSpecs(tool);
+        const auto actionSpecs = GetActionControlSpecs();
+
+        const int innerPaddingX = ScaleForDpi(kToolbarGroupInnerPaddingX, dpi);
+        const int controlGap = ScaleForDpi(6, dpi);
+        const int toolsMinWidth = MeasureSingleRowWidth(toolSpecs, dpi, controlGap) + (innerPaddingX * 2);
+        const int optionsMinWidth = MeasureSingleRowWidth(optionSpecs, dpi, controlGap) + (innerPaddingX * 2);
+        const int actionsMinWidth = MeasureSingleRowWidth(actionSpecs, dpi, controlGap) + (innerPaddingX * 2);
+        const int minimumHorizontalWidth = toolsMinWidth + optionsMinWidth + actionsMinWidth + (groupGap * 2);
+
         ToolbarLayout layout{};
-        layout.actionsGroup = MakeRect(client.right - margin - ScaleForDpi(264, dpi), top, client.right - margin, bottom);
-        layout.toolsGroup = MakeRect(margin, top, margin + ScaleForDpi(470, dpi), bottom);
-        layout.optionsGroup = MakeRect(layout.toolsGroup.right + ScaleForDpi(12, dpi), top, layout.actionsGroup.left - ScaleForDpi(12, dpi), bottom);
+        layout.mode = availableWidth >= minimumHorizontalWidth ? ToolbarLayoutMode::Horizontal : ToolbarLayoutMode::Stacked;
+
+        if (layout.mode == ToolbarLayoutMode::Horizontal)
+        {
+            const int toolsWidth = toolsMinWidth;
+            const int actionsWidth = actionsMinWidth;
+            const int optionsWidth = std::max(optionsMinWidth, availableWidth - toolsWidth - actionsWidth - (groupGap * 2));
+            int left = margin;
+            layout.tools = BuildToolbarGroupLayout(left, top, toolsWidth, toolSpecs, dpi);
+            left = layout.tools.panelRect.right + groupGap;
+            layout.options = BuildToolbarGroupLayout(left, top, optionsWidth, optionSpecs, dpi);
+            left = layout.options.panelRect.right + groupGap;
+            layout.actions = BuildToolbarGroupLayout(left, top, actionsWidth, actionSpecs, dpi);
+        }
+        else
+        {
+            const int fullWidth = availableWidth;
+            int currentTop = top;
+            layout.tools = BuildToolbarGroupLayout(margin, currentTop, fullWidth, toolSpecs, dpi);
+            currentTop = layout.tools.panelRect.bottom + groupGap;
+            layout.options = BuildToolbarGroupLayout(margin, currentTop, fullWidth, optionSpecs, dpi);
+            currentTop = layout.options.panelRect.bottom + groupGap;
+            layout.actions = BuildToolbarGroupLayout(margin, currentTop, fullWidth, actionSpecs, dpi);
+        }
+
+        const int groupsBottom = std::max({ layout.tools.panelRect.bottom, layout.options.panelRect.bottom, layout.actions.panelRect.bottom });
+        layout.metaRect = MakeRect(margin, groupsBottom + metaGap, client.right - margin, groupsBottom + metaGap + metaHeight);
+        layout.toolbarRect = MakeRect(0, 0, client.right, layout.metaRect.bottom + toolbarBottomInset);
         return layout;
     }
 
@@ -1010,6 +1256,35 @@ namespace oneshot
         addTool(kCancelId);
     }
 
+    static void PositionToolbarGroupControls(HWND parent, const std::vector<ToolbarControlSpec>& specs, const RECT& contentRect, UINT dpi, bool alignRight)
+    {
+        const int gap = ScaleForDpi(6, dpi);
+        const int controlHeight = ScaleForDpi(28, dpi);
+        const int availableWidth = std::max(1, static_cast<int>(contentRect.right - contentRect.left));
+        const auto rows = BuildFlowRows(specs, availableWidth, gap, dpi);
+        int top = contentRect.top;
+
+        for (const auto& row : rows)
+        {
+            int left = alignRight ? contentRect.right - row.width : contentRect.left;
+            for (const auto& spec : row.items)
+            {
+                HWND control = GetDlgItem(parent, spec.id);
+                if (!control)
+                {
+                    continue;
+                }
+
+                const int controlWidth = GetScaledControlWidth(spec, dpi, availableWidth);
+                const int controlWindowHeight = spec.isCombo ? ScaleForDpi(280, dpi) : controlHeight;
+                MoveWindow(control, left, top, controlWidth, controlWindowHeight, TRUE);
+                left += controlWidth + gap;
+            }
+
+            top += controlHeight + gap;
+        }
+    }
+
     static std::vector<int> GetMarkupButtonIds()
     {
         return {
@@ -1086,103 +1361,34 @@ namespace oneshot
         }
 
         const UINT dpi = GetDpiForWindow(state.hwnd);
-        const ToolbarLayout toolbar = BuildToolbarLayout(state.hwnd);
-        const int buttonTop = toolbar.toolsGroup.top + ScaleForDpi(kToolbarButtonInsetY, dpi);
-        const int buttonHeight = ScaleForDpi(28, dpi);
-        const int buttonGap = ScaleForDpi(6, dpi);
+        const ToolbarLayout toolbar = BuildToolbarLayout(state.hwnd, state.tool);
         const int buttonRadius = ScaleForDpi(kActionButtonRadius, dpi);
-        int left = toolbar.toolsGroup.left + ScaleForDpi(12, dpi);
 
-        const auto placeButton = [&](int id, int width)
-        {
-            HWND control = GetDlgItem(state.hwnd, id);
-            if (!control)
-            {
-                return;
-            }
-
-            MoveWindow(control, left, buttonTop, ScaleForDpi(width, dpi), buttonHeight, TRUE);
-            left += ScaleForDpi(width, dpi) + buttonGap;
-        };
-
-        placeButton(kToolPenId, 54);
-        placeButton(kToolLineId, 54);
-        placeButton(kToolArrowId, 60);
-        placeButton(kToolRectId, 54);
-        placeButton(kToolEllipseId, 68);
-        placeButton(kToolPolygonId, 56);
-        placeButton(kToolTextId, 54);
-
-        left = toolbar.optionsGroup.left + ScaleForDpi(12, dpi);
-        const auto placeOptionButton = [&](int id, int width)
-        {
-            HWND control = GetDlgItem(state.hwnd, id);
-            if (!control)
-            {
-                return;
-            }
-
-            const bool visible = ShouldShowToolControl(state.tool, id);
-            SetControlVisible(control, visible);
-            if (!visible)
-            {
-                return;
-            }
-
-            MoveWindow(control, left, buttonTop, ScaleForDpi(width, dpi), buttonHeight, TRUE);
-            left += ScaleForDpi(width, dpi) + buttonGap;
-        };
-
-        placeOptionButton(kStrokeColorId, 92);
-        placeOptionButton(kFillColorId, 74);
-        placeOptionButton(kTextColorId, 76);
-        placeOptionButton(kFillToggleId, 64);
-        placeOptionButton(kThicknessDownId, 44);
-        placeOptionButton(kThicknessUpId, 44);
-        placeOptionButton(kFontDownId, 44);
-        placeOptionButton(kFontUpId, 44);
-
-        HWND combo = state.fontCombo;
-        if (combo)
-        {
-            const bool visible = ShouldShowToolControl(state.tool, kFontComboId);
-            SetControlVisible(combo, visible);
-            if (visible)
-            {
-                MoveWindow(combo, left, buttonTop, ScaleForDpi(168, dpi), ScaleForDpi(280, dpi), TRUE);
-            }
-        }
-
-        int right = toolbar.actionsGroup.right - ScaleForDpi(12, dpi);
-        const auto placeActionButton = [&](int id, int width)
-        {
-            HWND control = GetDlgItem(state.hwnd, id);
-            if (!control)
-            {
-                return;
-            }
-
-            const int scaledWidth = ScaleForDpi(width, dpi);
-            right -= scaledWidth;
-            MoveWindow(control, right, buttonTop, scaledWidth, buttonHeight, TRUE);
-            right -= buttonGap;
-        };
-
-        placeActionButton(kCancelId, kActionButtonSize);
-        placeActionButton(kDoneId, kActionButtonSize);
-        placeActionButton(kCopyId, kActionButtonSize);
-        placeActionButton(kRedoId, kActionButtonSize);
-        placeActionButton(kUndoId, kActionButtonSize);
-        placeActionButton(kFitId, kActionButtonSize);
+        PositionToolbarGroupControls(state.hwnd, GetToolControlSpecs(), toolbar.tools.contentRect, dpi, false);
+        PositionToolbarGroupControls(state.hwnd, GetOptionControlSpecs(state.tool), toolbar.options.contentRect, dpi, false);
+        PositionToolbarGroupControls(
+            state.hwnd,
+            GetActionControlSpecs(),
+            toolbar.actions.contentRect,
+            dpi,
+            toolbar.mode == ToolbarLayoutMode::Horizontal);
 
         ApplyToolbarButtonRegions(state, buttonRadius);
 
         if (state.canvas)
         {
-            const int canvasTop = toolbar.toolsGroup.bottom + ScaleForDpi(kToolbarBottomInset, dpi);
+            const int canvasTop = toolbar.toolbarRect.bottom;
             RECT client{};
             GetClientRect(state.hwnd, &client);
-            MoveWindow(state.canvas, ScaleForDpi(12, dpi), canvasTop, client.right - ScaleForDpi(24, dpi), client.bottom - canvasTop - ScaleForDpi(12, dpi), TRUE);
+            const int canvasWidth = std::max(1, static_cast<int>(client.right) - ScaleForDpi(24, dpi));
+            const int canvasHeight = std::max(1, static_cast<int>(client.bottom) - canvasTop - ScaleForDpi(12, dpi));
+            MoveWindow(
+                state.canvas,
+                ScaleForDpi(12, dpi),
+                canvasTop,
+                canvasWidth,
+                canvasHeight,
+                TRUE);
         }
     }
 
@@ -2292,21 +2498,21 @@ namespace oneshot
             FillRect(dc, &client, backgroundBrush);
             DeleteObject(backgroundBrush);
 
-            RECT toolbarRect = MakeRect(0, 0, client.right, ScaleForDpi(kToolbarHeight, GetDpiForWindow(hwnd)));
+            const ToolbarLayout toolbar = BuildToolbarLayout(hwnd, state->tool);
+            RECT toolbarRect = toolbar.toolbarRect;
             HBRUSH toolbarBrush = CreateSolidBrush(kToolbarSurface);
             FillRect(dc, &toolbarRect, toolbarBrush);
             DeleteObject(toolbarBrush);
 
-            const ToolbarLayout toolbar = BuildToolbarLayout(hwnd);
             HFONT previousFont = static_cast<HFONT>(SelectObject(dc, state->uiBoldFont ? state->uiBoldFont : GetStockObject(DEFAULT_GUI_FONT)));
-            DrawToolbarPanel(dc, toolbar.toolsGroup, L"TOOLS");
-            DrawToolbarPanel(dc, toolbar.optionsGroup, GetToolOptionsLabel(state->tool));
-            DrawToolbarPanel(dc, toolbar.actionsGroup, L"ACTIONS");
+            DrawToolbarPanel(dc, toolbar.tools.panelRect, L"TOOLS");
+            DrawToolbarPanel(dc, toolbar.options.panelRect, GetToolOptionsLabel(state->tool));
+            DrawToolbarPanel(dc, toolbar.actions.panelRect, L"ACTIONS");
 
-            RECT metaRect = MakeRect(18, toolbarRect.bottom - ScaleForDpi(22, GetDpiForWindow(hwnd)), client.right - 18, toolbarRect.bottom - ScaleForDpi(6, GetDpiForWindow(hwnd)));
             SetBkMode(dc, TRANSPARENT);
             SetTextColor(dc, kMutedTextColor);
             std::wstring meta = GetToolMetaText(*state);
+            RECT metaRect = toolbar.metaRect;
             DrawTextW(dc, meta.c_str(), static_cast<int>(meta.size()), &metaRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
             SelectObject(dc, previousFont);
             EndPaint(hwnd, &paint);
