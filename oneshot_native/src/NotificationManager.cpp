@@ -585,7 +585,7 @@ namespace oneshot
         notification->layout = BuildLayout(96);
 
         notification->hwnd = CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
             L"OneShotNative.Notification",
             kAppName,
             WS_POPUP,
@@ -593,7 +593,7 @@ namespace oneshot
             CW_USEDEFAULT,
             notification->layout.windowWidth,
             notification->layout.windowHeight,
-            owner,
+            nullptr,
             nullptr,
             GetModuleHandleW(nullptr),
             notification.get());
@@ -653,9 +653,9 @@ namespace oneshot
 
         ApplyLayout(notification.get());
 
-        ShowWindow(notification->hwnd, SW_SHOWNOACTIVATE);
         _notifications.insert(_notifications.begin(), std::move(notification));
         RepositionAll();
+        UpdateWindow(_notifications.front()->hwnd);
     }
 
     void NotificationManager::CloseAll()
