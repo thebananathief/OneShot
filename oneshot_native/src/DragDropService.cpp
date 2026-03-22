@@ -1,5 +1,6 @@
 #include "oneshot_native/DragDropService.h"
 
+#include <ole2.h>
 #include <objidl.h>
 #include <shellapi.h>
 
@@ -20,6 +21,31 @@ namespace
         std::wstringstream builder;
         builder << L"0x" << std::hex << std::uppercase << static_cast<unsigned long>(hr);
         return builder.str();
+    }
+
+    std::wstring DescribeOleInitFailure(const HRESULT hr)
+    {
+        if (hr == RPC_E_CHANGED_MODE)
+        {
+            return L"OLE initialization failed because the UI thread is already using a different COM apartment mode.";
+        }
+
+        return L"OLE initialization failed: " + HrMessage(hr);
+    }
+
+    std::wstring DescribeDragDropFailure(const HRESULT hr)
+    {
+        if (hr == CO_E_NOTINITIALIZED)
+        {
+            return L"DoDragDrop failed because OLE is not initialized on the UI thread.";
+        }
+
+        if (hr == RPC_E_CHANGED_MODE)
+        {
+            return L"DoDragDrop failed because the UI thread is using a different COM apartment mode.";
+        }
+
+        return L"DoDragDrop failed: " + HrMessage(hr);
     }
 
     FORMATETC MakeFormat(CLIPFORMAT format)
@@ -413,6 +439,13 @@ namespace oneshot
             return false;
         }
 
+        const HRESULT oleHr = OleInitialize(nullptr);
+        if (oleHr != S_OK && oleHr != S_FALSE)
+        {
+            error = DescribeOleInitFailure(oleHr);
+            return false;
+        }
+
         if (sourceWindow)
         {
             SetForegroundWindow(sourceWindow);
@@ -437,17 +470,20 @@ namespace oneshot
 
         if (hr == DRAGDROP_S_DROP && (effect & DROPEFFECT_COPY) != 0)
         {
+            OleUninitialize();
             return true;
         }
 
         if (hr == DRAGDROP_S_CANCEL)
         {
+            OleUninitialize();
             return false;
         }
 
         if (FAILED(hr))
         {
-            error = L"DoDragDrop failed: " + HrMessage(hr);
+            error = DescribeDragDropFailure(hr);
+            OleUninitialize();
             return false;
         }
 
@@ -460,6 +496,7 @@ namespace oneshot
             error = L"Drop completed without a copy effect.";
         }
 
+        OleUninitialize();
         return false;
     }
 }
