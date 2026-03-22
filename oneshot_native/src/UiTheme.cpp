@@ -92,6 +92,37 @@ namespace oneshot::ui
         DeleteObject(pen);
     }
 
+    void ApplyRoundedWindowRegion(HWND hwnd, int radius)
+    {
+        if (!hwnd)
+        {
+            return;
+        }
+
+        RECT client{};
+        if (!GetClientRect(hwnd, &client))
+        {
+            return;
+        }
+
+        if (client.right <= client.left || client.bottom <= client.top)
+        {
+            return;
+        }
+
+        if (radius <= 0)
+        {
+            SetWindowRgn(hwnd, nullptr, TRUE);
+            return;
+        }
+
+        HRGN region = CreateRoundRectRgn(client.left, client.top, client.right + 1, client.bottom + 1, radius, radius);
+        if (!SetWindowRgn(hwnd, region, TRUE))
+        {
+            DeleteObject(region);
+        }
+    }
+
     void ApplyModernFrame(HWND hwnd, bool darkCaption)
     {
         if (!hwnd)

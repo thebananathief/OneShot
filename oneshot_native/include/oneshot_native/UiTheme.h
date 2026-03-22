@@ -30,5 +30,6 @@ namespace oneshot::ui
 
     void FillRoundedRect(HDC dc, const RECT& rect, COLORREF color, int radius);
     void FrameRoundedRect(HDC dc, const RECT& rect, COLORREF color, int radius, int thickness = 1);
+    void ApplyRoundedWindowRegion(HWND hwnd, int radius);
     void ApplyModernFrame(HWND hwnd, bool darkCaption = true);
 }
