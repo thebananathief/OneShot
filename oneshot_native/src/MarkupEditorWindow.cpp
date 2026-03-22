@@ -1215,6 +1215,8 @@ namespace oneshot
     static void DrawThemedButton(const MarkupEditorWindow::State& state, const DRAWITEMSTRUCT& draw)
     {
         RECT rect = draw.rcItem;
+        RECT paintRect = rect;
+        InflateRect(&paintRect, -1, -1);
         const bool hover = IsWindowHovering(draw.hwndItem) || (draw.itemState & ODS_HOTLIGHT) != 0;
         const bool pressed = (draw.itemState & ODS_SELECTED) != 0;
         const bool disabled = (draw.itemState & ODS_DISABLED) != 0;
@@ -1279,27 +1281,27 @@ namespace oneshot
             text = RGB(122, 132, 147);
         }
 
-        FillRoundedRect(draw.hDC, rect, background, 14);
-        FrameRoundedRect(draw.hDC, rect, border, 14);
+        FillRoundedRect(draw.hDC, paintRect, background, 12);
+        FrameRoundedRect(draw.hDC, paintRect, border, 12);
 
         std::wstring label;
         if (draw.CtlID == kStrokeColorId)
         {
             const auto& stroke = GetStrokeSettings(state, state.tool);
-            DrawColorSwatch(draw.hDC, rect, stroke.color);
+            DrawColorSwatch(draw.hDC, paintRect, stroke.color);
             label = FormatColorLabel(L"Stroke", stroke.color);
         }
         else if (draw.CtlID == kFillColorId)
         {
             const ShapeToolSettings* shape = GetShapeSettings(state, state.tool);
             const COLORREF color = shape ? shape->fillColor : RGB(255, 224, 224);
-            DrawColorSwatch(draw.hDC, rect, color);
+            DrawColorSwatch(draw.hDC, paintRect, color);
             label = FormatColorLabel(L"Fill", color);
         }
         else if (draw.CtlID == kTextColorId)
         {
             const auto& textSettings = GetTextSettings(state);
-            DrawColorSwatch(draw.hDC, rect, textSettings.color);
+            DrawColorSwatch(draw.hDC, paintRect, textSettings.color);
             label = FormatColorLabel(L"Text", textSettings.color);
         }
         else if (draw.CtlID == kFillToggleId)
@@ -1335,7 +1337,7 @@ namespace oneshot
             if (const wchar_t* glyph = GetActionButtonGlyph(draw.CtlID))
             {
                 HFONT previousFont = static_cast<HFONT>(SelectObject(draw.hDC, state.actionSymbolFont ? state.actionSymbolFont : GetStockObject(DEFAULT_GUI_FONT)));
-                RECT glyphRect = rect;
+                RECT glyphRect = paintRect;
                 glyphRect.top -= 1;
                 SetBkMode(draw.hDC, TRANSPARENT);
                 SetTextColor(draw.hDC, text);
@@ -1345,7 +1347,7 @@ namespace oneshot
         }
         else if (draw.CtlID == kStrokeColorId || draw.CtlID == kFillColorId || draw.CtlID == kTextColorId)
         {
-            RECT textRect = rect;
+            RECT textRect = paintRect;
             textRect.left += 30;
             SetBkMode(draw.hDC, TRANSPARENT);
             SetTextColor(draw.hDC, text);
@@ -1353,12 +1355,12 @@ namespace oneshot
         }
         else
         {
-            DrawButtonText(draw.hDC, rect, label, text);
+            DrawButtonText(draw.hDC, paintRect, label, text);
         }
 
         if (focused)
         {
-            RECT focusRect = rect;
+            RECT focusRect = paintRect;
             InflateRect(&focusRect, -4, -4);
             DrawFocusRect(draw.hDC, &focusRect);
         }
