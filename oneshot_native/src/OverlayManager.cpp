@@ -20,6 +20,7 @@ namespace
     struct OverlayWindowState
     {
         OverlaySession* session{nullptr};
+        UINT64 sessionId{0};
         RECT monitorBounds{};
         HDC backBufferDc{nullptr};
         HBITMAP backBufferBitmap{nullptr};
@@ -37,11 +38,14 @@ namespace
 
     struct OverlaySession
     {
+        UINT64 sessionId{0};
         const oneshot::CapturedImage* image{nullptr};
         RECT selection{};
         bool selecting{false};
         bool completed{false};
         bool cancelled{true};
+        bool active{false};
+        bool finishing{false};
         POINT anchor{};
         std::vector<HWND> windows;
         HHOOK keyboardHook{nullptr};
@@ -49,6 +53,28 @@ namespace
     };
 
     OverlaySession* g_activeSession = nullptr;
+    UINT64 g_activeSessionId = 0;
+    UINT64 g_nextSessionId = 1;
+
+    bool IsActiveSession(const OverlaySession* session)
+    {
+        return session &&
+            session == g_activeSession &&
+            session->active &&
+            !session->completed &&
+            !session->finishing &&
+            session->sessionId != 0 &&
+            session->sessionId == g_activeSessionId;
+    }
+
+    bool IsActiveWindowState(const OverlayWindowState* state)
+    {
+        return state &&
+            state->session &&
+            IsActiveSession(state->session) &&
+            state->sessionId != 0 &&
+            state->sessionId == g_activeSessionId;
+    }
 
     RECT NormalizeRect(POINT a, POINT b)
     {
@@ -96,7 +122,6 @@ namespace
     void CloseAll(OverlaySession& session)
     {
         auto windows = session.windows;
-        session.windows.clear();
         for (const auto hwnd : windows)
         {
             if (IsWindow(hwnd))
@@ -104,6 +129,7 @@ namespace
                 DestroyWindow(hwnd);
             }
         }
+        session.windows.clear();
     }
 
     void RemoveHooks(OverlaySession& session)
@@ -123,14 +149,22 @@ namespace
         if (g_activeSession == &session)
         {
             g_activeSession = nullptr;
+            g_activeSessionId = 0;
         }
     }
 
     void FinishSession(OverlaySession& session, bool cancelled)
     {
+        if (session.finishing || session.completed)
+        {
+            return;
+        }
+
+        session.finishing = true;
         session.cancelled = cancelled;
         session.completed = true;
         session.selecting = false;
+        session.active = false;
         RemoveHooks(session);
         CloseAll(session);
     }
@@ -395,7 +429,7 @@ namespace
 
     LRESULT CALLBACK KeyboardHookProc(int code, WPARAM wParam, LPARAM lParam)
     {
-        if (code >= 0 && g_activeSession && wParam == kWmKeyDown)
+        if (code >= 0 && IsActiveSession(g_activeSession) && wParam == kWmKeyDown)
         {
             const auto* keyboard = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
             if (keyboard && keyboard->vkCode == kVkEscape)
@@ -410,7 +444,7 @@ namespace
 
     LRESULT CALLBACK MouseHookProc(int code, WPARAM wParam, LPARAM lParam)
     {
-        if (code >= 0 && g_activeSession)
+        if (code >= 0 && IsActiveSession(g_activeSession))
         {
             const auto* mouse = reinterpret_cast<MSLLHOOKSTRUCT*>(lParam);
             if (mouse)
@@ -442,6 +476,8 @@ namespace
     void InstallHooks(OverlaySession& session)
     {
         g_activeSession = &session;
+        g_activeSessionId = session.sessionId;
+        session.active = true;
         session.keyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, KeyboardHookProc, GetModuleHandleW(nullptr), 0);
         session.mouseHook = SetWindowsHookExW(WH_MOUSE_LL, MouseHookProc, GetModuleHandleW(nullptr), 0);
     }
@@ -464,6 +500,7 @@ namespace
         }
 
         auto* session = state->session;
+        const bool activeState = IsActiveWindowState(state);
 
         switch (message)
         {
@@ -480,21 +517,21 @@ namespace
         case WM_ERASEBKGND:
             return TRUE;
         case WM_KEYDOWN:
-            if (session && wParam == VK_ESCAPE)
+            if (activeState && wParam == VK_ESCAPE)
             {
                 FinishSession(*session, true);
                 return 0;
             }
             break;
         case WM_RBUTTONUP:
-            if (session)
+            if (activeState)
             {
                 FinishSession(*session, true);
                 return 0;
             }
             break;
         case WM_LBUTTONDOWN:
-            if (session)
+            if (activeState)
             {
                 SetForegroundWindow(hwnd);
                 session->selecting = true;
@@ -539,6 +576,11 @@ namespace
 
 namespace oneshot
 {
+    bool OverlayManager::IsSelectionActive() const noexcept
+    {
+        return IsActiveSession(g_activeSession);
+    }
+
     void OverlayManager::Prewarm(HWND owner) const
     {
         EnsureOverlayClassRegistered();
@@ -596,6 +638,11 @@ namespace oneshot
     {
         EnsureOverlayClassRegistered();
 
+        if (IsSelectionActive())
+        {
+            return std::nullopt;
+        }
+
         std::vector<RECT> monitorBounds;
         MonitorEnumData enumData{ &monitorBounds };
         EnumDisplayMonitors(nullptr, nullptr, EnumMonitorsProc, reinterpret_cast<LPARAM>(&enumData));
@@ -615,6 +662,7 @@ namespace oneshot
         });
 
         OverlaySession session{};
+        session.sessionId = g_nextSessionId++;
         session.image = &image;
         std::vector<std::unique_ptr<OverlayWindowState>> windowStates;
         windowStates.reserve(monitorBounds.size());
@@ -623,6 +671,7 @@ namespace oneshot
         {
             auto state = std::make_unique<OverlayWindowState>();
             state->session = &session;
+            state->sessionId = session.sessionId;
             state->monitorBounds = bounds;
 
             HWND overlay = CreateWindowExW(
@@ -641,8 +690,8 @@ namespace oneshot
 
             if (!overlay)
             {
-                RemoveHooks(session);
                 CloseAll(session);
+                RemoveHooks(session);
                 return std::nullopt;
             }
 
@@ -664,8 +713,17 @@ namespace oneshot
         MSG message{};
         while (!session.completed && !session.windows.empty() && GetMessageW(&message, nullptr, 0, 0))
         {
+            if (message.message == WM_COMMAND && LOWORD(message.wParam) == kTrayMenuSnapshot)
+            {
+                continue;
+            }
             TranslateMessage(&message);
             DispatchMessageW(&message);
+        }
+
+        if (!session.windows.empty())
+        {
+            CloseAll(session);
         }
 
         if (session.cancelled)

@@ -213,6 +213,12 @@ namespace oneshot
             _snapshotActive.store(false);
         };
 
+        if (_overlayManager.IsSelectionActive())
+        {
+            resetSnapshotActive();
+            return;
+        }
+
         const auto virtualCapture = _captureService.CaptureVirtualScreen();
         if (!virtualCapture.has_value())
         {
@@ -250,18 +256,19 @@ namespace oneshot
         {
             const auto message = std::wstring(L"Clipboard copy failed: ") + outputError;
             _tray.ShowBalloon(L"OneShot", message);
-            resetSnapshotActive();
-            return;
         }
 
-        const auto dragPath = _tempFileManager.CreateDragImagePath();
+        std::filesystem::path dragPath;
         std::wstring dragError;
-        if (!_outputService.SavePng(*capture, dragPath, dragError))
+        const auto candidateDragPath = _tempFileManager.CreateDragImagePath();
+        if (_outputService.SavePng(*capture, candidateDragPath, dragError))
+        {
+            dragPath = candidateDragPath;
+        }
+        else
         {
             const auto message = std::wstring(L"Saved screenshot, but temp drag image failed: ") + dragError;
             _tray.ShowBalloon(L"OneShot", message);
-            resetSnapshotActive();
-            return;
         }
 
         _notificationManager.Show(_hwnd, std::move(*capture), savedPath, dragPath);

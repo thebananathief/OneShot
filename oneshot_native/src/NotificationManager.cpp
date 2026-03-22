@@ -673,6 +673,11 @@ namespace oneshot
             return;
         }
 
+        if (notification->dragPath.empty() || !std::filesystem::exists(notification->dragPath))
+        {
+            return;
+        }
+
         std::wstring error;
         const bool started = _dragDrop.StartFileDrag(notification->hwnd, notification->dragPath, error);
         if (!started && !error.empty())
