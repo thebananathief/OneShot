@@ -120,12 +120,6 @@ namespace
         bool isCombo{false};
     };
 
-    struct ToolbarFlowRow
-    {
-        std::vector<ToolbarControlSpec> items;
-        int width{0};
-    };
-
     struct ToolbarGroupLayout
     {
         RECT panelRect{};
@@ -394,43 +388,14 @@ namespace
         };
     }
 
-    int GetScaledControlWidth(const ToolbarControlSpec& spec, UINT dpi, int availableWidth = INT_MAX)
-    {
-        return std::min(ScaleForDpi(spec.width, dpi), availableWidth);
-    }
-
-    std::vector<ToolbarFlowRow> BuildFlowRows(const std::vector<ToolbarControlSpec>& specs, int availableWidth, int gap, UINT dpi)
-    {
-        std::vector<ToolbarFlowRow> rows;
-        rows.push_back({});
-        const int clampedWidth = std::max(1, availableWidth);
-
-        for (const auto& spec : specs)
-        {
-            const int itemWidth = GetScaledControlWidth(spec, dpi, clampedWidth);
-            ToolbarFlowRow* row = &rows.back();
-            const int proposedWidth = row->items.empty() ? itemWidth : row->width + gap + itemWidth;
-            if (!row->items.empty() && proposedWidth > clampedWidth)
-            {
-                rows.push_back({});
-                row = &rows.back();
-            }
-
-            row->items.push_back(spec);
-            row->width = row->items.size() == 1 ? itemWidth : row->width + gap + itemWidth;
-        }
-
-        return rows;
-    }
-
     int MeasureSingleRowWidth(const std::vector<ToolbarControlSpec>& specs, UINT dpi, int gap)
     {
         int width = 0;
-        for (const auto& spec : specs)
+        for (size_t i = 0; i < specs.size(); ++i)
         {
-            const int itemWidth = ScaleForDpi(spec.width, dpi);
+            const int itemWidth = ScaleForDpi(specs[i].width, dpi);
             width += itemWidth;
-            if (&spec != &specs.back())
+            if ((i + 1) < specs.size())
             {
                 width += gap;
             }
@@ -439,26 +404,61 @@ namespace
         return width;
     }
 
-    ToolbarGroupLayout BuildToolbarGroupLayout(int left, int top, int width, const std::vector<ToolbarControlSpec>& specs, UINT dpi)
+    int GetToolbarGroupHeight(UINT dpi)
+    {
+        const int contentTopOffset = ScaleForDpi(kToolbarButtonInsetY, dpi);
+        const int controlHeight = ScaleForDpi(28, dpi);
+        const int bottomPadding = ScaleForDpi(kToolbarGroupBottomPadding, dpi);
+        return std::max(ScaleForDpi(kToolbarGroupHeight, dpi), contentTopOffset + controlHeight + bottomPadding);
+    }
+
+    int MeasureToolbarGroupWidth(const std::vector<ToolbarControlSpec>& specs, UINT dpi)
+    {
+        const int innerPaddingX = ScaleForDpi(kToolbarGroupInnerPaddingX, dpi);
+        const int gap = ScaleForDpi(6, dpi);
+        return (innerPaddingX * 2) + MeasureSingleRowWidth(specs, dpi, gap);
+    }
+
+    std::vector<oneshot::MarkupEditorWindow::Tool> GetAllMarkupTools()
+    {
+        return {
+            oneshot::MarkupEditorWindow::Tool::Pen,
+            oneshot::MarkupEditorWindow::Tool::Line,
+            oneshot::MarkupEditorWindow::Tool::Arrow,
+            oneshot::MarkupEditorWindow::Tool::Rectangle,
+            oneshot::MarkupEditorWindow::Tool::Ellipse,
+            oneshot::MarkupEditorWindow::Tool::Polygon,
+            oneshot::MarkupEditorWindow::Tool::Text
+        };
+    }
+
+    int GetWidestOptionsGroupWidth(UINT dpi)
+    {
+        int widestWidth = 0;
+        for (const auto tool : GetAllMarkupTools())
+        {
+            widestWidth = std::max(widestWidth, MeasureToolbarGroupWidth(GetOptionControlSpecs(tool), dpi));
+        }
+
+        return widestWidth;
+    }
+
+    ToolbarGroupLayout BuildToolbarGroupLayout(int left, int top, int width, UINT dpi)
     {
         const int innerPaddingX = ScaleForDpi(kToolbarGroupInnerPaddingX, dpi);
         const int contentTopOffset = ScaleForDpi(kToolbarButtonInsetY, dpi);
         const int controlHeight = ScaleForDpi(28, dpi);
-        const int gap = ScaleForDpi(6, dpi);
-        const int bottomPadding = ScaleForDpi(kToolbarGroupBottomPadding, dpi);
-        const int contentWidth = std::max(1, width - (innerPaddingX * 2));
-        const auto rows = BuildFlowRows(specs, contentWidth, gap, dpi);
-        const int rowCount = std::max(1, static_cast<int>(rows.size()));
-        const int contentHeight = (rowCount * controlHeight) + ((rowCount - 1) * gap);
-        const int groupHeight = std::max(ScaleForDpi(kToolbarGroupHeight, dpi), contentTopOffset + contentHeight + bottomPadding);
+        const int groupHeight = GetToolbarGroupHeight(dpi);
+        const int contentLeft = left + innerPaddingX;
+        const int contentRight = std::max(contentLeft, left + width - innerPaddingX);
 
         ToolbarGroupLayout group{};
         group.panelRect = MakeRect(left, top, left + width, top + groupHeight);
         group.contentRect = MakeRect(
-            left + innerPaddingX,
+            contentLeft,
             top + contentTopOffset,
-            left + width - innerPaddingX,
-            top + contentTopOffset + contentHeight);
+            contentRight,
+            top + contentTopOffset + controlHeight);
         return group;
     }
 
@@ -478,46 +478,23 @@ namespace
         const auto toolSpecs = GetToolControlSpecs();
         const auto optionSpecs = GetOptionControlSpecs(tool);
         const auto actionSpecs = GetActionControlSpecs();
+        const int toolsWidth = MeasureToolbarGroupWidth(toolSpecs, dpi);
+        const int actionWidth = MeasureToolbarGroupWidth(actionSpecs, dpi);
+        const int optionBaseWidth = MeasureToolbarGroupWidth(optionSpecs, dpi);
+        const int optionExtraWidth = std::max(0, availableWidth - (toolsWidth + optionBaseWidth + actionWidth + (groupGap * 2)));
+        const int optionsWidth = optionBaseWidth + optionExtraWidth;
+        const int groupHeight = GetToolbarGroupHeight(dpi);
 
         ToolbarLayout layout{};
-        const int totalGroupWidth = std::max(1, availableWidth - (groupGap * 2));
-        const int minToolsWidth = ScaleForDpi(128, dpi);
-        const int minOptionsWidth = ScaleForDpi(112, dpi);
-        const int minActionsWidth = ScaleForDpi(96, dpi);
-
-        int toolsWidth = std::max(minToolsWidth, (totalGroupWidth * 38) / 100);
-        int actionsWidth = std::max(minActionsWidth, (totalGroupWidth * 22) / 100);
-        int optionsWidth = totalGroupWidth - toolsWidth - actionsWidth;
-
-        if (optionsWidth < minOptionsWidth)
-        {
-            int deficit = minOptionsWidth - optionsWidth;
-
-            const int toolsReducible = std::max(0, toolsWidth - minToolsWidth);
-            const int reduceFromTools = std::min(deficit, toolsReducible);
-            toolsWidth -= reduceFromTools;
-            deficit -= reduceFromTools;
-
-            const int actionsReducible = std::max(0, actionsWidth - minActionsWidth);
-            const int reduceFromActions = std::min(deficit, actionsReducible);
-            actionsWidth -= reduceFromActions;
-            deficit -= reduceFromActions;
-
-            optionsWidth = totalGroupWidth - toolsWidth - actionsWidth;
-        }
-
         int left = margin;
-        layout.tools = BuildToolbarGroupLayout(left, top, toolsWidth, toolSpecs, dpi);
+        layout.tools = BuildToolbarGroupLayout(left, top, toolsWidth, dpi);
         left = layout.tools.panelRect.right + groupGap;
-        layout.options = BuildToolbarGroupLayout(left, top, optionsWidth, optionSpecs, dpi);
+        layout.options = BuildToolbarGroupLayout(left, top, optionsWidth, dpi);
         left = layout.options.panelRect.right + groupGap;
-        layout.actions = BuildToolbarGroupLayout(left, top, actionsWidth, actionSpecs, dpi);
+        layout.actions = BuildToolbarGroupLayout(left, top, actionWidth, dpi);
 
-        const int groupsBottom = std::max({ layout.tools.panelRect.bottom, layout.options.panelRect.bottom, layout.actions.panelRect.bottom });
-        layout.tools.panelRect.bottom = groupsBottom;
-        layout.options.panelRect.bottom = groupsBottom;
-        layout.actions.panelRect.bottom = groupsBottom;
-        layout.metaRect = MakeRect(margin, groupsBottom + metaGap, client.right - margin, groupsBottom + metaGap + metaHeight);
+        const int groupsBottom = top + groupHeight;
+        layout.metaRect = MakeRect(margin, groupsBottom + metaGap, std::max(margin, static_cast<int>(client.right) - margin), groupsBottom + metaGap + metaHeight);
         layout.toolbarRect = MakeRect(0, 0, client.right, layout.metaRect.bottom + toolbarBottomInset);
         return layout;
     }
@@ -1257,37 +1234,46 @@ namespace oneshot
     {
         const int gap = ScaleForDpi(6, dpi);
         const int controlHeight = ScaleForDpi(28, dpi);
-        const int availableWidth = std::max(1, static_cast<int>(contentRect.right - contentRect.left));
-        const auto rows = BuildFlowRows(specs, availableWidth, gap, dpi);
-        int top = contentRect.top;
+        const int rowWidth = MeasureSingleRowWidth(specs, dpi, gap);
+        int left = alignRight ? std::max(contentRect.left, contentRect.right - rowWidth) : contentRect.left;
 
-        for (const auto& row : rows)
+        for (const auto& spec : specs)
         {
-            int left = alignRight ? contentRect.right - row.width : contentRect.left;
-            for (const auto& spec : row.items)
+            HWND control = GetDlgItem(parent, spec.id);
+            if (!control)
             {
-                HWND control = GetDlgItem(parent, spec.id);
-                if (!control)
-                {
-                    continue;
-                }
-
-                const int controlWidth = GetScaledControlWidth(spec, dpi, availableWidth);
-                const int controlWindowHeight = spec.isCombo ? ScaleForDpi(280, dpi) : controlHeight;
-                MoveWindow(control, left, top, controlWidth, controlWindowHeight, TRUE);
-                left += controlWidth + gap;
+                continue;
             }
 
-            top += controlHeight + gap;
+            const int controlWidth = ScaleForDpi(spec.width, dpi);
+            const int controlWindowHeight = spec.isCombo ? ScaleForDpi(280, dpi) : controlHeight;
+            MoveWindow(control, left, contentRect.top, controlWidth, controlWindowHeight, TRUE);
+            left += controlWidth + gap;
         }
     }
 
     static SIZE GetMinimumEditorWindowSize(HWND hwnd)
     {
-        RECT rect = MakeRect(0, 0, 400, 300);
+        const UINT dpi = hwnd ? GetDpiForWindow(hwnd) : 96;
+        const int margin = ScaleForDpi(12, dpi);
+        const int top = ScaleForDpi(16, dpi);
+        const int groupGap = ScaleForDpi(kToolbarGroupGap, dpi);
+        const int metaGap = ScaleForDpi(kToolbarMetaGap, dpi);
+        const int metaHeight = ScaleForDpi(kToolbarMetaHeight, dpi);
+        const int toolbarBottomInset = ScaleForDpi(10, dpi);
+        const int minimumCanvasHeight = ScaleForDpi(140, dpi);
+        const int minimumClientWidth =
+            (margin * 2)
+            + (groupGap * 2)
+            + MeasureToolbarGroupWidth(GetToolControlSpecs(), dpi)
+            + GetWidestOptionsGroupWidth(dpi)
+            + MeasureToolbarGroupWidth(GetActionControlSpecs(), dpi);
+        const int minimumToolbarHeight = top + GetToolbarGroupHeight(dpi) + metaGap + metaHeight + toolbarBottomInset;
+        const int minimumClientHeight = std::max(ScaleForDpi(300, dpi), minimumToolbarHeight + minimumCanvasHeight);
+
+        RECT rect = MakeRect(0, 0, minimumClientWidth, minimumClientHeight);
         const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(hwnd, GWL_STYLE));
         const DWORD exStyle = static_cast<DWORD>(GetWindowLongPtrW(hwnd, GWL_EXSTYLE));
-        const UINT dpi = hwnd ? GetDpiForWindow(hwnd) : 96;
         AdjustWindowRectExForDpi(&rect, style, FALSE, exStyle, dpi);
 
         SIZE size{};
