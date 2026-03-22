@@ -87,7 +87,7 @@ namespace
         const int outerPadding = ScaleValue(12, layout.dpi);
         const int columnGap = ScaleValue(10, layout.dpi);
         const int actionWidth = ScaleValue(56, layout.dpi);
-        const int dismissSize = ScaleValue(36, layout.dpi);
+        const int dismissSize = ScaleValue(56, layout.dpi);
         const int markupSize = ScaleValue(56, layout.dpi);
         const int contentHeight = (layout.cardRect.bottom - layout.cardRect.top) - (outerPadding * 2);
         const int contentWidth = (layout.cardRect.right - layout.cardRect.left) - (outerPadding * 2);
@@ -95,10 +95,9 @@ namespace
         const int thumbHeight = contentHeight;
         const int actionLeft = layout.cardRect.right - outerPadding - actionWidth;
         const int actionTop = layout.cardRect.top + outerPadding;
-        const int dismissLeft = actionLeft + ((actionWidth - dismissSize) / 2);
 
         layout.thumbnailRect = MakeRect(layout.cardRect.left + outerPadding, layout.cardRect.top + outerPadding, thumbWidth, thumbHeight);
-        layout.dismissButtonRect = MakeRect(dismissLeft, actionTop, dismissSize, dismissSize);
+        layout.dismissButtonRect = MakeRect(actionLeft, actionTop, dismissSize, dismissSize);
         layout.markupButtonRect = MakeRect(actionLeft, layout.cardRect.bottom - outerPadding - markupSize, markupSize, markupSize);
         return layout;
     }
@@ -388,7 +387,6 @@ namespace oneshot
         const bool dismiss = draw.CtlID == kDismissButtonId;
 
         COLORREF fill = dismiss ? palette.dangerBackground : palette.accent;
-        COLORREF border = dismiss ? palette.dangerBackgroundHot : palette.accentHot;
         COLORREF text = palette.text;
 
         if (!dismiss)
@@ -413,7 +411,6 @@ namespace oneshot
         }
 
         ui::FillRoundedRect(draw.hDC, draw.rcItem, fill, notification.layout.buttonRadius);
-        ui::FrameRoundedRect(draw.hDC, draw.rcItem, border, notification.layout.buttonRadius);
 
         HFONT font = reinterpret_cast<HFONT>(SendMessageW(draw.hwndItem, WM_GETFONT, 0, 0));
         HGDIOBJ oldFont = font ? SelectObject(draw.hDC, font) : nullptr;
