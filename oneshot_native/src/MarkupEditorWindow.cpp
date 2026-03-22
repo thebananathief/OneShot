@@ -2249,6 +2249,7 @@ namespace oneshot
             {
                 LayoutToolbarControls(*state);
                 UpdateZoomBounds(*state, true);
+                RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN);
                 InvalidateCanvas(*state);
             }
             return 0;
