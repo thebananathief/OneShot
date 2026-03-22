@@ -113,12 +113,6 @@ namespace
         std::wstring fontFace{L"Segoe UI"};
     };
 
-    enum class ToolbarLayoutMode
-    {
-        Horizontal,
-        Stacked
-    };
-
     struct ToolbarControlSpec
     {
         int id{0};
@@ -140,7 +134,6 @@ namespace
 
     struct ToolbarLayout
     {
-        ToolbarLayoutMode mode{ToolbarLayoutMode::Horizontal};
         ToolbarGroupLayout tools{};
         ToolbarGroupLayout options{};
         ToolbarGroupLayout actions{};
@@ -486,40 +479,44 @@ namespace
         const auto optionSpecs = GetOptionControlSpecs(tool);
         const auto actionSpecs = GetActionControlSpecs();
 
-        const int innerPaddingX = ScaleForDpi(kToolbarGroupInnerPaddingX, dpi);
-        const int controlGap = ScaleForDpi(6, dpi);
-        const int toolsMinWidth = MeasureSingleRowWidth(toolSpecs, dpi, controlGap) + (innerPaddingX * 2);
-        const int optionsMinWidth = MeasureSingleRowWidth(optionSpecs, dpi, controlGap) + (innerPaddingX * 2);
-        const int actionsMinWidth = MeasureSingleRowWidth(actionSpecs, dpi, controlGap) + (innerPaddingX * 2);
-        const int minimumHorizontalWidth = toolsMinWidth + optionsMinWidth + actionsMinWidth + (groupGap * 2);
-
         ToolbarLayout layout{};
-        layout.mode = availableWidth >= minimumHorizontalWidth ? ToolbarLayoutMode::Horizontal : ToolbarLayoutMode::Stacked;
+        const int totalGroupWidth = std::max(1, availableWidth - (groupGap * 2));
+        const int minToolsWidth = ScaleForDpi(128, dpi);
+        const int minOptionsWidth = ScaleForDpi(112, dpi);
+        const int minActionsWidth = ScaleForDpi(96, dpi);
 
-        if (layout.mode == ToolbarLayoutMode::Horizontal)
+        int toolsWidth = std::max(minToolsWidth, (totalGroupWidth * 38) / 100);
+        int actionsWidth = std::max(minActionsWidth, (totalGroupWidth * 22) / 100);
+        int optionsWidth = totalGroupWidth - toolsWidth - actionsWidth;
+
+        if (optionsWidth < minOptionsWidth)
         {
-            const int toolsWidth = toolsMinWidth;
-            const int actionsWidth = actionsMinWidth;
-            const int optionsWidth = std::max(optionsMinWidth, availableWidth - toolsWidth - actionsWidth - (groupGap * 2));
-            int left = margin;
-            layout.tools = BuildToolbarGroupLayout(left, top, toolsWidth, toolSpecs, dpi);
-            left = layout.tools.panelRect.right + groupGap;
-            layout.options = BuildToolbarGroupLayout(left, top, optionsWidth, optionSpecs, dpi);
-            left = layout.options.panelRect.right + groupGap;
-            layout.actions = BuildToolbarGroupLayout(left, top, actionsWidth, actionSpecs, dpi);
+            int deficit = minOptionsWidth - optionsWidth;
+
+            const int toolsReducible = std::max(0, toolsWidth - minToolsWidth);
+            const int reduceFromTools = std::min(deficit, toolsReducible);
+            toolsWidth -= reduceFromTools;
+            deficit -= reduceFromTools;
+
+            const int actionsReducible = std::max(0, actionsWidth - minActionsWidth);
+            const int reduceFromActions = std::min(deficit, actionsReducible);
+            actionsWidth -= reduceFromActions;
+            deficit -= reduceFromActions;
+
+            optionsWidth = totalGroupWidth - toolsWidth - actionsWidth;
         }
-        else
-        {
-            const int fullWidth = availableWidth;
-            int currentTop = top;
-            layout.tools = BuildToolbarGroupLayout(margin, currentTop, fullWidth, toolSpecs, dpi);
-            currentTop = layout.tools.panelRect.bottom + groupGap;
-            layout.options = BuildToolbarGroupLayout(margin, currentTop, fullWidth, optionSpecs, dpi);
-            currentTop = layout.options.panelRect.bottom + groupGap;
-            layout.actions = BuildToolbarGroupLayout(margin, currentTop, fullWidth, actionSpecs, dpi);
-        }
+
+        int left = margin;
+        layout.tools = BuildToolbarGroupLayout(left, top, toolsWidth, toolSpecs, dpi);
+        left = layout.tools.panelRect.right + groupGap;
+        layout.options = BuildToolbarGroupLayout(left, top, optionsWidth, optionSpecs, dpi);
+        left = layout.options.panelRect.right + groupGap;
+        layout.actions = BuildToolbarGroupLayout(left, top, actionsWidth, actionSpecs, dpi);
 
         const int groupsBottom = std::max({ layout.tools.panelRect.bottom, layout.options.panelRect.bottom, layout.actions.panelRect.bottom });
+        layout.tools.panelRect.bottom = groupsBottom;
+        layout.options.panelRect.bottom = groupsBottom;
+        layout.actions.panelRect.bottom = groupsBottom;
         layout.metaRect = MakeRect(margin, groupsBottom + metaGap, client.right - margin, groupsBottom + metaGap + metaHeight);
         layout.toolbarRect = MakeRect(0, 0, client.right, layout.metaRect.bottom + toolbarBottomInset);
         return layout;
@@ -1285,6 +1282,20 @@ namespace oneshot
         }
     }
 
+    static SIZE GetMinimumEditorWindowSize(HWND hwnd)
+    {
+        RECT rect = MakeRect(0, 0, 400, 300);
+        const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(hwnd, GWL_STYLE));
+        const DWORD exStyle = static_cast<DWORD>(GetWindowLongPtrW(hwnd, GWL_EXSTYLE));
+        const UINT dpi = hwnd ? GetDpiForWindow(hwnd) : 96;
+        AdjustWindowRectExForDpi(&rect, style, FALSE, exStyle, dpi);
+
+        SIZE size{};
+        size.cx = rect.right - rect.left;
+        size.cy = rect.bottom - rect.top;
+        return size;
+    }
+
     static std::vector<int> GetMarkupButtonIds()
     {
         return {
@@ -1371,7 +1382,7 @@ namespace oneshot
             GetActionControlSpecs(),
             toolbar.actions.contentRect,
             dpi,
-            toolbar.mode == ToolbarLayoutMode::Horizontal);
+            true);
 
         ApplyToolbarButtonRegions(state, buttonRadius);
 
@@ -2189,6 +2200,18 @@ namespace oneshot
         {
         case WM_ERASEBKGND:
             return TRUE;
+        case WM_GETMINMAXINFO:
+        {
+            auto* info = reinterpret_cast<MINMAXINFO*>(lParam);
+            if (info)
+            {
+                const SIZE minimumSize = GetMinimumEditorWindowSize(hwnd);
+                info->ptMinTrackSize.x = minimumSize.cx;
+                info->ptMinTrackSize.y = minimumSize.cy;
+                return 0;
+            }
+            break;
+        }
         case WM_CREATE:
             ApplyModernWindowFrame(hwnd);
             CreateWindowExW(0, L"Button", L"Pen", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kToolPenId)), GetModuleHandleW(nullptr), nullptr);
