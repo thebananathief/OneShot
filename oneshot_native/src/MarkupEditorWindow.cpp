@@ -6,6 +6,7 @@
 #include <cmath>
 #include <commdlg.h>
 #include <dwmapi.h>
+#include <uxtheme.h>
 
 namespace
 {
@@ -35,8 +36,8 @@ namespace
     constexpr int kStrokeColorId = 2016;
     constexpr int kFillColorId = 2017;
     constexpr int kTextColorId = 2018;
-    constexpr int kThicknessDownId = 2019;
-    constexpr int kThicknessUpId = 2020;
+    constexpr int kThicknessPreviewId = 2019;
+    constexpr int kThicknessSliderId = 2020;
     constexpr int kFillToggleId = 2021;
     constexpr int kFontDownId = 2022;
     constexpr int kFontUpId = 2023;
@@ -57,6 +58,8 @@ namespace
     constexpr int kActionButtonSize = 30;
     constexpr int kActionButtonRadius = 14;
     constexpr int kActionButtonFontPointSize = 13;
+    constexpr int kStrokeThicknessMin = 1;
+    constexpr int kStrokeThicknessMax = 16;
 
     constexpr COLORREF kWindowBackground = RGB(18, 24, 33);
     constexpr COLORREF kToolbarSurface = RGB(31, 39, 52);
@@ -102,6 +105,7 @@ namespace
         int id{0};
         int width{0};
         bool isCombo{false};
+        bool isTrackbar{false};
     };
 
     struct ToolbarGroupLayout
@@ -301,8 +305,8 @@ namespace
         switch (id)
         {
         case kStrokeColorId:
-        case kThicknessDownId:
-        case kThicknessUpId:
+        case kThicknessPreviewId:
+        case kThicknessSliderId:
             return ToolUsesStrokeToolbarControls(tool);
         case kFillColorId:
         case kFillToggleId:
@@ -336,13 +340,13 @@ namespace
         {
             specs.push_back({ kFillToggleId, 64 });
         }
-        if (ShouldShowToolbarControl(tool, kThicknessDownId))
+        if (ShouldShowToolbarControl(tool, kThicknessPreviewId))
         {
-            specs.push_back({ kThicknessDownId, 44 });
+            specs.push_back({ kThicknessPreviewId, 34 });
         }
-        if (ShouldShowToolbarControl(tool, kThicknessUpId))
+        if (ShouldShowToolbarControl(tool, kThicknessSliderId))
         {
-            specs.push_back({ kThicknessUpId, 44 });
+            specs.push_back({ kThicknessSliderId, 132, false, true });
         }
         if (ShouldShowToolbarControl(tool, kFontDownId))
         {
@@ -615,6 +619,8 @@ namespace oneshot
         MarkupEditorSettingsStore* settingsStore{nullptr};
         COLORREF customColors[16]{};
         HWND fontCombo{nullptr};
+        HWND thicknessPreview{nullptr};
+        HWND thicknessSlider{nullptr};
         double zoom{1.0};
         double minimumZoom{1.0};
         double viewportOffsetX{0.0};
@@ -1125,13 +1131,53 @@ namespace oneshot
         state.settingsStore->Save(BuildPreferencesSnapshot(state));
     }
 
+    static void SetControlVisible(HWND control, bool visible);
+
+    static int GetCurrentStrokeThickness(const MarkupEditorWindow::State& state)
+    {
+        if (!ToolUsesStrokeOptions(state.tool))
+        {
+            return kStrokeThicknessMin;
+        }
+
+        return std::clamp(GetStrokeSettings(state, state.tool).thickness, kStrokeThicknessMin, kStrokeThicknessMax);
+    }
+
+    static void InvalidateStrokeThicknessControls(const MarkupEditorWindow::State& state)
+    {
+        if (state.thicknessPreview)
+        {
+            InvalidateRect(state.thicknessPreview, nullptr, TRUE);
+        }
+
+        if (state.thicknessSlider)
+        {
+            InvalidateRect(state.thicknessSlider, nullptr, TRUE);
+        }
+    }
+
+    static void SyncStrokeThicknessControls(MarkupEditorWindow::State& state)
+    {
+        const bool visible = ToolUsesStrokeOptions(state.tool);
+        SetControlVisible(state.thicknessPreview, visible);
+        SetControlVisible(state.thicknessSlider, visible);
+
+        if (!visible || !state.thicknessSlider)
+        {
+            return;
+        }
+
+        SendMessageW(state.thicknessSlider, TBM_SETPOS, TRUE, GetCurrentStrokeThickness(state));
+        InvalidateStrokeThicknessControls(state);
+    }
+
     static bool ShouldShowToolControl(MarkupEditorWindow::Tool tool, int id)
     {
         switch (id)
         {
         case kStrokeColorId:
-        case kThicknessDownId:
-        case kThicknessUpId:
+        case kThicknessPreviewId:
+        case kThicknessSliderId:
             return ToolUsesStrokeOptions(tool);
         case kFillColorId:
         case kFillToggleId:
@@ -1164,12 +1210,13 @@ namespace oneshot
             return;
         }
 
-        for (const int id : { kStrokeColorId, kFillColorId, kTextColorId, kFillToggleId, kThicknessDownId, kThicknessUpId, kFontDownId, kFontUpId })
+        for (const int id : { kStrokeColorId, kFillColorId, kTextColorId, kFillToggleId, kThicknessPreviewId, kThicknessSliderId, kFontDownId, kFontUpId })
         {
             SetControlVisible(GetDlgItem(state.hwnd, id), ShouldShowToolControl(state.tool, id));
         }
 
         SetControlVisible(state.fontCombo, ShouldShowToolControl(state.tool, kFontComboId));
+        SyncStrokeThicknessControls(state);
 
         if (const ShapeToolSettings* shape = GetShapeSettings(state, state.tool))
         {
@@ -1262,7 +1309,7 @@ namespace oneshot
             }
 
             const int controlWidth = ScaleForDpi(spec.width, dpi);
-            const int controlWindowHeight = spec.isCombo ? ScaleForDpi(280, dpi) : controlHeight;
+            const int controlWindowHeight = spec.isCombo ? ScaleForDpi(280, dpi) : (spec.isTrackbar ? ScaleForDpi(32, dpi) : controlHeight);
             MoveWindow(control, left, contentRect.top, controlWidth, controlWindowHeight, TRUE);
             left += controlWidth + gap;
         }
@@ -1302,7 +1349,7 @@ namespace oneshot
     {
         return {
             kToolPenId, kToolLineId, kToolArrowId, kToolRectId, kToolEllipseId, kToolPolygonId, kToolTextId,
-            kStrokeColorId, kFillColorId, kTextColorId, kFillToggleId, kThicknessDownId, kThicknessUpId,
+            kStrokeColorId, kFillColorId, kTextColorId, kFillToggleId, kThicknessPreviewId,
             kFontDownId, kFontUpId, kFitId, kUndoId, kRedoId, kCopyId, kDoneId, kCancelId,
             kPromptOkId, kPromptCancelId
         };
@@ -1431,6 +1478,74 @@ namespace oneshot
         FrameRoundedRect(dc, swatch, RGB(230, 236, 244), 8);
     }
 
+    static void DrawStrokePreviewDot(HDC dc, const RECT& rect, COLORREF color, int thickness, UINT dpi)
+    {
+        RECT dotRect = rect;
+        const int boundedThickness = std::clamp(thickness, kStrokeThicknessMin, kStrokeThicknessMax);
+        const int minimumDiameter = ScaleForDpi(5, dpi);
+        const int maximumDiameter = std::max(minimumDiameter, static_cast<int>(rect.bottom - rect.top) - ScaleForDpi(8, dpi));
+        const int diameter = std::clamp(ScaleForDpi(4 + boundedThickness, dpi), minimumDiameter, maximumDiameter);
+        const int centerX = (rect.left + rect.right) / 2;
+        const int centerY = (rect.top + rect.bottom) / 2;
+        dotRect.left = centerX - (diameter / 2);
+        dotRect.top = centerY - (diameter / 2);
+        dotRect.right = dotRect.left + diameter;
+        dotRect.bottom = dotRect.top + diameter;
+
+        HBRUSH fillBrush = CreateSolidBrush(color);
+        HPEN outlinePen = CreatePen(PS_SOLID, 1, RGB(230, 236, 244));
+        HGDIOBJ previousBrush = SelectObject(dc, fillBrush);
+        HGDIOBJ previousPen = SelectObject(dc, outlinePen);
+        Ellipse(dc, dotRect.left, dotRect.top, dotRect.right, dotRect.bottom);
+        SelectObject(dc, previousPen);
+        SelectObject(dc, previousBrush);
+        DeleteObject(outlinePen);
+        DeleteObject(fillBrush);
+    }
+
+    static LRESULT DrawThemedThicknessSlider(const MarkupEditorWindow::State& state, NMCUSTOMDRAW& customDraw)
+    {
+        if (customDraw.dwDrawStage != CDDS_PREPAINT)
+        {
+            return CDRF_DODEFAULT;
+        }
+
+        RECT client = customDraw.rc;
+        HBRUSH backgroundBrush = CreateSolidBrush(kToolbarPanel);
+        FillRect(customDraw.hdc, &client, backgroundBrush);
+        DeleteObject(backgroundBrush);
+
+        RECT channel{};
+        RECT thumb{};
+        SendMessageW(customDraw.hdr.hwndFrom, TBM_GETCHANNELRECT, 0, reinterpret_cast<LPARAM>(&channel));
+        SendMessageW(customDraw.hdr.hwndFrom, TBM_GETTHUMBRECT, 0, reinterpret_cast<LPARAM>(&thumb));
+
+        RECT track = channel;
+        const int trackHeight = std::max(ScaleForDpi(4, GetDpiForWindow(state.hwnd)), 4);
+        const int trackCenterY = (channel.top + channel.bottom) / 2;
+        track.top = trackCenterY - (trackHeight / 2);
+        track.bottom = track.top + trackHeight;
+
+        const int thumbCenterX = (thumb.left + thumb.right) / 2;
+        RECT activeTrack = track;
+        activeTrack.right = static_cast<LONG>(std::clamp(thumbCenterX, static_cast<int>(track.left), static_cast<int>(track.right)));
+
+        FillRoundedRect(customDraw.hdc, track, kControlBorder, trackHeight);
+        if (activeTrack.right > activeTrack.left)
+        {
+            FillRoundedRect(customDraw.hdc, activeTrack, kAccentColor, trackHeight);
+        }
+
+        RECT thumbRect = thumb;
+        InflateRect(&thumbRect, -1, -1);
+        const bool focused = GetFocus() == customDraw.hdr.hwndFrom;
+        const COLORREF thumbColor = focused ? kAccentHotColor : kControlSurfaceHot;
+        FillRoundedRect(customDraw.hdc, thumbRect, thumbColor, std::max(ScaleForDpi(8, GetDpiForWindow(state.hwnd)), 8));
+        FrameRoundedRect(customDraw.hdc, thumbRect, kAccentHotColor, std::max(ScaleForDpi(8, GetDpiForWindow(state.hwnd)), 8));
+
+        return CDRF_SKIPDEFAULT;
+    }
+
     static void DrawThemedButton(const MarkupEditorWindow::State& state, const DRAWITEMSTRUCT& draw)
     {
         RECT rect = draw.rcItem;
@@ -1536,13 +1651,10 @@ namespace oneshot
             const ShapeToolSettings* shape = GetShapeSettings(state, state.tool);
             label = (shape && shape->fillEnabled) ? L"Fill On" : L"Fill Off";
         }
-        else if (draw.CtlID == kThicknessDownId)
+        else if (draw.CtlID == kThicknessPreviewId)
         {
-            label = L"T-";
-        }
-        else if (draw.CtlID == kThicknessUpId)
-        {
-            label = L"T+";
+            const auto& stroke = GetStrokeSettings(state, state.tool);
+            DrawStrokePreviewDot(draw.hDC, paintRect, stroke.color, stroke.thickness, GetDpiForWindow(state.hwnd));
         }
         else if (draw.CtlID == kFontDownId)
         {
@@ -1579,6 +1691,9 @@ namespace oneshot
             SetBkMode(draw.hDC, TRANSPARENT);
             SetTextColor(draw.hDC, text);
             DrawTextW(draw.hDC, label.c_str(), static_cast<int>(label.size()), &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        }
+        else if (draw.CtlID == kThicknessPreviewId)
+        {
         }
         else
         {
@@ -2254,8 +2369,8 @@ namespace oneshot
             CreateWindowExW(0, L"Button", L"Fill", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFillColorId)), GetModuleHandleW(nullptr), nullptr);
             CreateWindowExW(0, L"Button", L"Text", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTextColorId)), GetModuleHandleW(nullptr), nullptr);
             CreateWindowExW(0, L"Button", L"Fill", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFillToggleId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"T-", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kThicknessDownId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"T+", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kThicknessUpId)), GetModuleHandleW(nullptr), nullptr);
+            state->thicknessPreview = CreateWindowExW(0, L"Button", L"", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kThicknessPreviewId)), GetModuleHandleW(nullptr), nullptr);
+            state->thicknessSlider = CreateWindowExW(0, TRACKBAR_CLASSW, L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | TBS_HORZ | TBS_NOTICKS, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kThicknessSliderId)), GetModuleHandleW(nullptr), nullptr);
             CreateWindowExW(0, L"Button", L"F-", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFontDownId)), GetModuleHandleW(nullptr), nullptr);
             CreateWindowExW(0, L"Button", L"F+", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFontUpId)), GetModuleHandleW(nullptr), nullptr);
             CreateWindowExW(0, L"Button", L"Fit", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFitId)), GetModuleHandleW(nullptr), nullptr);
@@ -2279,6 +2394,14 @@ namespace oneshot
                 nullptr,
                 GetModuleHandleW(nullptr),
                 nullptr);
+            if (state->thicknessSlider)
+            {
+                SendMessageW(state->thicknessSlider, TBM_SETRANGE, TRUE, MAKELPARAM(kStrokeThicknessMin, kStrokeThicknessMax));
+                SendMessageW(state->thicknessSlider, TBM_SETLINESIZE, 0, 1);
+                SendMessageW(state->thicknessSlider, TBM_SETPAGESIZE, 0, 1);
+                SendMessageW(state->thicknessSlider, TBM_SETPOS, TRUE, GetCurrentStrokeThickness(*state));
+                SetWindowTheme(state->thicknessSlider, L"", L"");
+            }
             PopulateFontCombo(state->fontCombo, state->textSettings.fontFace);
             ApplyToolbarFonts(*state);
             ConfigureActionTooltips(*state);
@@ -2315,6 +2438,16 @@ namespace oneshot
 
             DrawThemedButton(*state, *draw);
             return TRUE;
+        }
+        case WM_NOTIFY:
+        {
+            auto* header = reinterpret_cast<NMHDR*>(lParam);
+            if (header && header->idFrom == kThicknessSliderId && header->code == NM_CUSTOMDRAW)
+            {
+                auto* customDraw = reinterpret_cast<NMCUSTOMDRAW*>(lParam);
+                return DrawThemedThicknessSlider(*state, *customDraw);
+            }
+            break;
         }
         case WM_COMMAND:
             switch (LOWORD(wParam))
@@ -2381,6 +2514,7 @@ namespace oneshot
                     if (ChooseEditorColor(hwnd, stroke.color, state->customColors))
                     {
                         PersistEditorPreferences(*state);
+                        InvalidateStrokeThicknessControls(*state);
                         InvalidateRect(hwnd, nullptr, FALSE);
                         InvalidateCanvas(*state);
                     }
@@ -2413,26 +2547,6 @@ namespace oneshot
                 if (ShapeToolSettings* shape = GetShapeSettings(*state, state->tool))
                 {
                     shape->fillEnabled = IsDlgButtonChecked(hwnd, kFillToggleId) == BST_CHECKED;
-                    PersistEditorPreferences(*state);
-                    InvalidateRect(hwnd, nullptr, FALSE);
-                    InvalidateCanvas(*state);
-                }
-                return 0;
-            case kThicknessDownId:
-                if (ToolUsesStrokeOptions(state->tool))
-                {
-                    auto& stroke = GetStrokeSettings(*state, state->tool);
-                    stroke.thickness = std::max(1, stroke.thickness - 1);
-                    PersistEditorPreferences(*state);
-                    InvalidateRect(hwnd, nullptr, FALSE);
-                    InvalidateCanvas(*state);
-                }
-                return 0;
-            case kThicknessUpId:
-                if (ToolUsesStrokeOptions(state->tool))
-                {
-                    auto& stroke = GetStrokeSettings(*state, state->tool);
-                    stroke.thickness = std::min(16, stroke.thickness + 1);
                     PersistEditorPreferences(*state);
                     InvalidateRect(hwnd, nullptr, FALSE);
                     InvalidateCanvas(*state);
@@ -2486,6 +2600,18 @@ namespace oneshot
                     state->textSettings.fontFace = fontName;
                     PersistEditorPreferences(*state);
                 }
+                InvalidateRect(hwnd, nullptr, FALSE);
+                InvalidateCanvas(*state);
+                return 0;
+            }
+            break;
+        case WM_HSCROLL:
+            if (reinterpret_cast<HWND>(lParam) == state->thicknessSlider && ToolUsesStrokeOptions(state->tool))
+            {
+                auto& stroke = GetStrokeSettings(*state, state->tool);
+                stroke.thickness = std::clamp(static_cast<int>(SendMessageW(state->thicknessSlider, TBM_GETPOS, 0, 0)), kStrokeThicknessMin, kStrokeThicknessMax);
+                PersistEditorPreferences(*state);
+                InvalidateStrokeThicknessControls(*state);
                 InvalidateRect(hwnd, nullptr, FALSE);
                 InvalidateCanvas(*state);
                 return 0;

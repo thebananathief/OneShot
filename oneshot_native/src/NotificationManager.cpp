@@ -711,7 +711,7 @@ namespace oneshot
     {
         INITCOMMONCONTROLSEX controls{};
         controls.dwSize = sizeof(controls);
-        controls.dwICC = ICC_WIN95_CLASSES;
+        controls.dwICC = ICC_WIN95_CLASSES | ICC_BAR_CLASSES;
         InitCommonControlsEx(&controls);
 
         WNDCLASSW windowClass{};
