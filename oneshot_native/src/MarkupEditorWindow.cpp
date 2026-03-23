@@ -60,6 +60,7 @@ namespace
     constexpr int kActionButtonFontPointSize = 13;
     constexpr int kStrokeThicknessMin = 1;
     constexpr int kStrokeThicknessMax = 16;
+    constexpr UINT kThicknessSliderSyncMessage = WM_APP + 1;
 
     constexpr COLORREF kWindowBackground = RGB(18, 24, 33);
     constexpr COLORREF kToolbarSurface = RGB(31, 39, 52);
@@ -1143,6 +1144,12 @@ namespace oneshot
         return std::clamp(GetStrokeSettings(state, state.tool).thickness, kStrokeThicknessMin, kStrokeThicknessMax);
     }
 
+    static int GetCanvasPreviewStrokeThickness(const MarkupEditorWindow::State& state, int thickness)
+    {
+        const int boundedThickness = std::max(kStrokeThicknessMin, thickness);
+        return std::max(1, static_cast<int>(std::lround(static_cast<double>(boundedThickness) * state.zoom)));
+    }
+
     static void InvalidateStrokeThicknessControls(const MarkupEditorWindow::State& state)
     {
         if (state.thicknessPreview)
@@ -1171,6 +1178,36 @@ namespace oneshot
         }
     }
 
+    static void ApplyStrokeThicknessChange(MarkupEditorWindow::State& state)
+    {
+        if (!state.thicknessSlider || !ToolUsesStrokeOptions(state.tool))
+        {
+            return;
+        }
+
+        auto& stroke = GetStrokeSettings(state, state.tool);
+        const int nextThickness = std::clamp(
+            static_cast<int>(SendMessageW(state.thicknessSlider, TBM_GETPOS, 0, 0)),
+            kStrokeThicknessMin,
+            kStrokeThicknessMax);
+        if (stroke.thickness != nextThickness)
+        {
+            stroke.thickness = nextThickness;
+            PersistEditorPreferences(state);
+        }
+
+        RedrawStrokeThicknessControls(state);
+
+        if (state.hwnd)
+        {
+            RedrawWindow(state.hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+        }
+        if (state.canvas)
+        {
+            RedrawWindow(state.canvas, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+        }
+    }
+
     static void SyncStrokeThicknessControls(MarkupEditorWindow::State& state)
     {
         const bool visible = ToolUsesStrokeOptions(state.tool);
@@ -1184,6 +1221,63 @@ namespace oneshot
 
         SendMessageW(state.thicknessSlider, TBM_SETPOS, TRUE, GetCurrentStrokeThickness(state));
         RedrawStrokeThicknessControls(state);
+    }
+
+    static LRESULT CALLBACK ThicknessSliderProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR refData)
+    {
+        auto* state = reinterpret_cast<MarkupEditorWindow::State*>(refData);
+        if (!state)
+        {
+            return DefSubclassProc(hwnd, message, wParam, lParam);
+        }
+
+        const auto syncAfterDefault = [&](bool shouldSync) -> LRESULT
+        {
+            const LRESULT before = SendMessageW(hwnd, TBM_GETPOS, 0, 0);
+            const LRESULT result = DefSubclassProc(hwnd, message, wParam, lParam);
+            if (shouldSync && before != SendMessageW(hwnd, TBM_GETPOS, 0, 0))
+            {
+                SendMessageW(GetParent(hwnd), kThicknessSliderSyncMessage, 0, 0);
+            }
+            return result;
+        };
+
+        switch (message)
+        {
+        case WM_LBUTTONDOWN:
+        case WM_LBUTTONUP:
+        case WM_MOUSEMOVE:
+        case WM_KEYDOWN:
+            return syncAfterDefault(message != WM_MOUSEMOVE || (wParam & MK_LBUTTON) != 0);
+        case WM_MOUSEWHEEL:
+        {
+            const int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+            const int stepCount = delta / WHEEL_DELTA;
+            if (stepCount == 0)
+            {
+                return 0;
+            }
+
+            const int current = std::clamp(
+                static_cast<int>(SendMessageW(hwnd, TBM_GETPOS, 0, 0)),
+                kStrokeThicknessMin,
+                kStrokeThicknessMax);
+            const int next = std::clamp(current + stepCount, kStrokeThicknessMin, kStrokeThicknessMax);
+            if (next != current)
+            {
+                SendMessageW(hwnd, TBM_SETPOS, TRUE, next);
+                SendMessageW(GetParent(hwnd), kThicknessSliderSyncMessage, 0, 0);
+            }
+            return 0;
+        }
+        case WM_NCDESTROY:
+            RemoveWindowSubclass(hwnd, ThicknessSliderProc, 0);
+            break;
+        default:
+            break;
+        }
+
+        return DefSubclassProc(hwnd, message, wParam, lParam);
     }
 
     static bool ShouldShowToolControl(MarkupEditorWindow::Tool tool, int id)
@@ -2316,7 +2410,8 @@ namespace oneshot
         {
             const POINT current = ClientToImagePoint(state.imageRect, state.currentImage, state.zoom, state.dragCurrent);
             const auto& polygon = state.polygonSettings;
-            DrawPolygonPreview(targetDc, canvasRect, state.zoom, state.polygonPoints, current, polygon.stroke.color, polygon.stroke.thickness);
+            const int previewThickness = GetCanvasPreviewStrokeThickness(state, polygon.stroke.thickness);
+            DrawPolygonPreview(targetDc, canvasRect, state.zoom, state.polygonPoints, current, polygon.stroke.color, previewThickness);
         }
 
         if (state.previewActive && state.tool != MarkupEditorWindow::Tool::Pen && state.tool != MarkupEditorWindow::Tool::Polygon)
@@ -2327,7 +2422,8 @@ namespace oneshot
             POINT previewEnd = ImagePointToClientPoint(canvasRect, state.zoom, end);
 
             const auto& stroke = GetStrokeSettings(state, state.tool);
-            HPEN pen = CreatePen(PS_SOLID, std::max(1, stroke.thickness), stroke.color);
+            const int previewThickness = GetCanvasPreviewStrokeThickness(state, stroke.thickness);
+            HPEN pen = CreatePen(PS_SOLID, previewThickness, stroke.color);
             HGDIOBJ oldPen = SelectObject(targetDc, pen);
             HBRUSH fillBrush = nullptr;
             HGDIOBJ oldBrush = SelectObject(targetDc, GetStockObject(HOLLOW_BRUSH));
@@ -2355,7 +2451,7 @@ namespace oneshot
                 {
                     previewEnd = SnapLineEndpoint(previewStart, previewEnd);
                 }
-                MarkupEditorWindow::DrawArrow(targetDc, previewStart, previewEnd, stroke.color, stroke.thickness);
+                MarkupEditorWindow::DrawArrow(targetDc, previewStart, previewEnd, stroke.color, previewThickness);
                 break;
             case MarkupEditorWindow::Tool::Rectangle:
             {
@@ -2537,6 +2633,7 @@ namespace oneshot
                 SendMessageW(state->thicknessSlider, TBM_SETPAGESIZE, 0, 1);
                 SendMessageW(state->thicknessSlider, TBM_SETPOS, TRUE, GetCurrentStrokeThickness(*state));
                 SetWindowTheme(state->thicknessSlider, L"", L"");
+                SetWindowSubclass(state->thicknessSlider, ThicknessSliderProc, 0, reinterpret_cast<DWORD_PTR>(state));
             }
             PopulateFontCombo(state->fontCombo, state->textSettings.fontFace);
             ApplyToolbarFonts(*state);
@@ -2744,15 +2841,13 @@ namespace oneshot
         case WM_HSCROLL:
             if (reinterpret_cast<HWND>(lParam) == state->thicknessSlider && ToolUsesStrokeOptions(state->tool))
             {
-                auto& stroke = GetStrokeSettings(*state, state->tool);
-                stroke.thickness = std::clamp(static_cast<int>(SendMessageW(state->thicknessSlider, TBM_GETPOS, 0, 0)), kStrokeThicknessMin, kStrokeThicknessMax);
-                PersistEditorPreferences(*state);
-                RedrawStrokeThicknessControls(*state);
-                InvalidateRect(hwnd, nullptr, FALSE);
-                InvalidateCanvas(*state);
+                ApplyStrokeThicknessChange(*state);
                 return 0;
             }
             break;
+        case kThicknessSliderSyncMessage:
+            ApplyStrokeThicknessChange(*state);
+            return 0;
         case WM_CLOSE:
             state->finished = true;
             DestroyWindow(hwnd);
