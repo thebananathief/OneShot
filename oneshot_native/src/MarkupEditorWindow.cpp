@@ -1,6 +1,7 @@
 #include "oneshot_native/MarkupEditorWindow.h"
 #include "oneshot_native/UiTheme.h"
 
+#include <algorithm>
 #include <commctrl.h>
 #include <windowsx.h>
 #include <cmath>
@@ -1693,8 +1694,8 @@ namespace oneshot
         SIZE measured{};
         const int width = std::max(1, static_cast<int>(rect.right - rect.left));
         const int height = std::max(1, static_cast<int>(rect.bottom - rect.top));
-        const COLORREF background = RGB(1, 2, 3);
         const int fallbackDiameter = std::max(1, ScaleForDpi(std::max(1, thickness), dpi));
+        constexpr DWORD kBackgroundPixel = 0x00D34721;
 
         HDC screenDc = GetDC(nullptr);
         if (!screenDc)
@@ -1731,23 +1732,35 @@ namespace oneshot
         }
 
         HGDIOBJ previousBitmap = SelectObject(memoryDc, bitmap);
-        RECT fillRect = MakeRect(0, 0, width, height);
-        HBRUSH backgroundBrush = CreateSolidBrush(background);
-        FillRect(memoryDc, &fillRect, backgroundBrush);
-        DeleteObject(backgroundBrush);
+        auto* pixels = static_cast<DWORD*>(pixelBits);
+        if (pixels)
+        {
+            std::fill_n(pixels, static_cast<size_t>(width) * static_cast<size_t>(height), kBackgroundPixel);
+        }
 
         const int centerY = height / 2;
-        const int inset = std::min(std::max(1, width / 2), std::max(2, ScaleForDpi(4, dpi)));
+        const int inset = std::min(width / 3, std::max(2, ScaleForDpi(4, dpi)));
         const int startX = inset;
-        const int endX = std::max(startX + 1, width - inset);
-        HPEN pen = CreatePen(PS_SOLID, std::max(1, thickness), color);
+        const int endX = std::max(startX + 1, (width - 1) - inset);
+        LOGBRUSH brush{};
+        brush.lbStyle = BS_SOLID;
+        brush.lbColor = color;
+        HPEN pen = ExtCreatePen(
+            PS_GEOMETRIC | PS_SOLID | PS_ENDCAP_FLAT | PS_JOIN_MITER,
+            std::max(1, thickness),
+            &brush,
+            0,
+            nullptr);
+        if (!pen)
+        {
+            pen = CreatePen(PS_SOLID, std::max(1, thickness), color);
+        }
         HGDIOBJ oldPen = SelectObject(memoryDc, pen);
         MoveToEx(memoryDc, startX, centerY, nullptr);
         LineTo(memoryDc, endX, centerY);
         SelectObject(memoryDc, oldPen);
         DeleteObject(pen);
 
-        const auto* pixels = static_cast<const DWORD*>(pixelBits);
         bool found = false;
         int minX = width;
         int minY = height;
@@ -1759,8 +1772,8 @@ namespace oneshot
             {
                 for (int x = 0; x < width; ++x)
                 {
-                    const COLORREF pixel = pixels[(static_cast<size_t>(y) * static_cast<size_t>(width)) + static_cast<size_t>(x)] & 0x00FFFFFF;
-                    if (pixel == background)
+                    const DWORD pixel = pixels[(static_cast<size_t>(y) * static_cast<size_t>(width)) + static_cast<size_t>(x)];
+                    if (pixel == kBackgroundPixel)
                     {
                         continue;
                     }

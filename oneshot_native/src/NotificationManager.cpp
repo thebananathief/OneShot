@@ -956,6 +956,7 @@ namespace oneshot
     {
         const RECT workArea = GetPrimaryWorkArea();
         int top = workArea.top + kNotificationMargin;
+        HWND insertAfter = HWND_TOPMOST;
 
         for (auto& notification : _notifications)
         {
@@ -967,13 +968,17 @@ namespace oneshot
             const int width = notification->layout.windowWidth;
             const int height = notification->layout.windowHeight;
             const int left = workArea.right - kNotificationMargin - width;
-            if (!SetWindowPos(notification->hwnd, HWND_TOPMOST, left, top, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW))
+            if (!SetWindowPos(notification->hwnd, insertAfter, left, top, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW))
             {
                 const DWORD error = GetLastError();
                 _debugState.lastFailedStep = L"SetWindowPos(notification)";
                 _debugState.lastErrorCode = error;
                 _debugState.lastErrorText = DescribeWindowsError(error);
                 TraceNotificationFailure(L"SetWindowPos(notification)", error);
+            }
+            else
+            {
+                insertAfter = notification->hwnd;
             }
             top += height + kNotificationGap;
         }
