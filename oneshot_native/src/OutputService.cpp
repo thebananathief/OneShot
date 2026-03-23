@@ -5,6 +5,13 @@
 
 namespace
 {
+    struct OpaqueBitmapPixels
+    {
+        int width{0};
+        int height{0};
+        std::vector<BYTE> bytes;
+    };
+
     struct BitfieldsBitmapInfo
     {
         BITMAPINFOHEADER header{};
@@ -60,9 +67,44 @@ namespace
         return builder.str();
     }
 
-    bool CreatePackedDibFromBitmap(HBITMAP bitmap, bool useV5Header, PackedDib& dib, std::wstring& error)
+    BITMAPV5HEADER CreateBitmapV5Header(int width, int height)
     {
-        dib.Reset();
+        BITMAPV5HEADER header{};
+        header.bV5Size = sizeof(header);
+        header.bV5Width = width;
+        header.bV5Height = -height;
+        header.bV5Planes = 1;
+        header.bV5BitCount = 32;
+        header.bV5Compression = BI_BITFIELDS;
+        header.bV5RedMask = 0x00FF0000;
+        header.bV5GreenMask = 0x0000FF00;
+        header.bV5BlueMask = 0x000000FF;
+        header.bV5AlphaMask = 0xFF000000;
+        header.bV5CSType = LCS_sRGB;
+        return header;
+    }
+
+    BitfieldsBitmapInfo CreateBitfieldsBitmapInfo(int width, int height)
+    {
+        const BITMAPV5HEADER header = CreateBitmapV5Header(width, height);
+
+        BitfieldsBitmapInfo info{};
+        info.header.biSize = sizeof(BITMAPINFOHEADER);
+        info.header.biWidth = width;
+        info.header.biHeight = -height;
+        info.header.biPlanes = header.bV5Planes;
+        info.header.biBitCount = header.bV5BitCount;
+        info.header.biCompression = BI_BITFIELDS;
+        info.header.biSizeImage = static_cast<DWORD>(static_cast<SIZE_T>(width) * static_cast<SIZE_T>(height) * 4);
+        info.masks[0] = header.bV5RedMask;
+        info.masks[1] = header.bV5GreenMask;
+        info.masks[2] = header.bV5BlueMask;
+        return info;
+    }
+
+    bool ExtractOpaqueBitmapPixels(HBITMAP bitmap, OpaqueBitmapPixels& pixels, std::wstring& error)
+    {
+        pixels = {};
 
         BITMAP bitmapInfo{};
         if (GetObjectW(bitmap, sizeof(bitmapInfo), &bitmapInfo) != sizeof(bitmapInfo))
@@ -76,20 +118,53 @@ namespace
             return false;
         }
 
-        BITMAPV5HEADER header{};
-        header.bV5Size = sizeof(header);
-        header.bV5Width = bitmapInfo.bmWidth;
-        header.bV5Height = -bitmapInfo.bmHeight;
-        header.bV5Planes = 1;
-        header.bV5BitCount = 32;
-        header.bV5Compression = BI_BITFIELDS;
-        header.bV5RedMask = 0x00FF0000;
-        header.bV5GreenMask = 0x0000FF00;
-        header.bV5BlueMask = 0x000000FF;
-        header.bV5AlphaMask = 0xFF000000;
-        header.bV5CSType = LCS_sRGB;
+        pixels.width = bitmapInfo.bmWidth;
+        pixels.height = bitmapInfo.bmHeight;
+        pixels.bytes.resize(static_cast<size_t>(pixels.width) * static_cast<size_t>(pixels.height) * 4);
+        BitfieldsBitmapInfo info = CreateBitfieldsBitmapInfo(pixels.width, pixels.height);
 
-        const SIZE_T pixelBytes = static_cast<SIZE_T>(bitmapInfo.bmWidth) * static_cast<SIZE_T>(bitmapInfo.bmHeight) * 4;
+        HDC screenDc = GetDC(nullptr);
+        if (!screenDc)
+        {
+            error = L"GetDC failed";
+            return false;
+        }
+
+        const int rows = GetDIBits(
+            screenDc,
+            bitmap,
+            0,
+            static_cast<UINT>(bitmapInfo.bmHeight),
+            pixels.bytes.data(),
+            reinterpret_cast<BITMAPINFO*>(&info),
+            DIB_RGB_COLORS);
+        ReleaseDC(nullptr, screenDc);
+        if (rows == 0)
+        {
+            error = L"GetDIBits failed";
+            return false;
+        }
+
+        for (size_t offset = 3; offset < pixels.bytes.size(); offset += 4)
+        {
+            pixels.bytes[offset] = 0xFF;
+        }
+
+        return true;
+    }
+
+    bool CreatePackedDibFromPixels(const OpaqueBitmapPixels& pixels, bool useV5Header, PackedDib& dib, std::wstring& error)
+    {
+        dib.Reset();
+
+        if (pixels.width <= 0 || pixels.height <= 0 || pixels.bytes.empty())
+        {
+            error = L"bitmap pixels are invalid";
+            return false;
+        }
+
+        const BITMAPV5HEADER header = CreateBitmapV5Header(pixels.width, pixels.height);
+        const SIZE_T pixelBytes = pixels.bytes.size();
         const SIZE_T headerBytes = useV5Header ? sizeof(BITMAPV5HEADER) : sizeof(BITMAPINFOHEADER) + (sizeof(DWORD) * 3);
 
         dib.handle = GlobalAlloc(GHND, headerBytes + pixelBytes);
@@ -130,42 +205,223 @@ namespace
             masks[2] = header.bV5BlueMask;
         }
 
-        BitfieldsBitmapInfo info{};
-        info.header.biSize = sizeof(BITMAPINFOHEADER);
-        info.header.biWidth = header.bV5Width;
-        info.header.biHeight = header.bV5Height;
-        info.header.biPlanes = header.bV5Planes;
-        info.header.biBitCount = header.bV5BitCount;
-        info.header.biCompression = BI_BITFIELDS;
-        info.header.biSizeImage = static_cast<DWORD>(pixelBytes);
-        info.masks[0] = header.bV5RedMask;
-        info.masks[1] = header.bV5GreenMask;
-        info.masks[2] = header.bV5BlueMask;
+        memcpy(pixelData, pixels.bytes.data(), pixelBytes);
+        return true;
+    }
 
+    bool CreateBitmapFromPixels(const OpaqueBitmapPixels& pixels, HBITMAP& bitmap, std::wstring& error)
+    {
+        bitmap = nullptr;
+        if (pixels.width <= 0 || pixels.height <= 0 || pixels.bytes.empty())
+        {
+            error = L"bitmap pixels are invalid";
+            return false;
+        }
+
+        BITMAPV5HEADER header = CreateBitmapV5Header(pixels.width, pixels.height);
+        void* bits = nullptr;
         HDC screenDc = GetDC(nullptr);
         if (!screenDc)
         {
             error = L"GetDC failed";
-            dib.Reset();
             return false;
         }
 
-        const int rows = GetDIBits(
-            screenDc,
-            bitmap,
-            0,
-            static_cast<UINT>(bitmapInfo.bmHeight),
-            pixelData,
-            reinterpret_cast<BITMAPINFO*>(&info),
-            DIB_RGB_COLORS);
+        bitmap = CreateDIBSection(screenDc, reinterpret_cast<BITMAPINFO*>(&header), DIB_RGB_COLORS, &bits, nullptr, 0);
         ReleaseDC(nullptr, screenDc);
-        if (rows == 0)
+        if (!bitmap || !bits)
         {
-            error = L"GetDIBits failed";
-            dib.Reset();
+            if (bitmap)
+            {
+                DeleteObject(bitmap);
+                bitmap = nullptr;
+            }
+            error = L"CreateDIBSection failed";
             return false;
         }
 
+        memcpy(bits, pixels.bytes.data(), pixels.bytes.size());
+        return true;
+    }
+
+    bool EncodeOpaquePixelsToPngStream(const OpaqueBitmapPixels& pixels, IStream* stream, std::wstring& error)
+    {
+        if (!stream)
+        {
+            error = L"stream is null";
+            return false;
+        }
+        if (pixels.width <= 0 || pixels.height <= 0 || pixels.bytes.empty())
+        {
+            error = L"bitmap pixels are invalid";
+            return false;
+        }
+
+        IWICImagingFactory* factory = nullptr;
+        IWICBitmapEncoder* encoder = nullptr;
+        IWICBitmapFrameEncode* frame = nullptr;
+
+        const auto releaseAll = [&]()
+        {
+            if (frame)
+            {
+                frame->Release();
+            }
+            if (encoder)
+            {
+                encoder->Release();
+            }
+            if (factory)
+            {
+                factory->Release();
+            }
+        };
+
+        HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory));
+        if (FAILED(hr))
+        {
+            error = L"CoCreateInstance(CLSID_WICImagingFactory) failed: " + HrMessage(hr);
+            releaseAll();
+            return false;
+        }
+
+        hr = factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder);
+        if (FAILED(hr))
+        {
+            error = L"CreateEncoder failed: " + HrMessage(hr);
+            releaseAll();
+            return false;
+        }
+
+        hr = encoder->Initialize(stream, WICBitmapEncoderNoCache);
+        if (FAILED(hr))
+        {
+            error = L"Encoder Initialize failed: " + HrMessage(hr);
+            releaseAll();
+            return false;
+        }
+
+        IPropertyBag2* properties = nullptr;
+        hr = encoder->CreateNewFrame(&frame, &properties);
+        if (properties)
+        {
+            properties->Release();
+        }
+
+        if (FAILED(hr))
+        {
+            error = L"CreateNewFrame failed: " + HrMessage(hr);
+            releaseAll();
+            return false;
+        }
+
+        hr = frame->Initialize(nullptr);
+        if (FAILED(hr))
+        {
+            error = L"Frame Initialize failed: " + HrMessage(hr);
+            releaseAll();
+            return false;
+        }
+
+        hr = frame->SetSize(static_cast<UINT>(pixels.width), static_cast<UINT>(pixels.height));
+        if (FAILED(hr))
+        {
+            error = L"SetSize failed: " + HrMessage(hr);
+            releaseAll();
+            return false;
+        }
+
+        WICPixelFormatGUID pixelFormat = GUID_WICPixelFormat32bppBGRA;
+        hr = frame->SetPixelFormat(&pixelFormat);
+        if (FAILED(hr))
+        {
+            error = L"SetPixelFormat failed: " + HrMessage(hr);
+            releaseAll();
+            return false;
+        }
+
+        const UINT stride = static_cast<UINT>(pixels.width * 4);
+        hr = frame->WritePixels(
+            static_cast<UINT>(pixels.height),
+            stride,
+            static_cast<UINT>(pixels.bytes.size()),
+            const_cast<BYTE*>(pixels.bytes.data()));
+        if (FAILED(hr))
+        {
+            error = L"WritePixels failed: " + HrMessage(hr);
+            releaseAll();
+            return false;
+        }
+
+        hr = frame->Commit();
+        if (FAILED(hr))
+        {
+            error = L"Frame Commit failed: " + HrMessage(hr);
+            releaseAll();
+            return false;
+        }
+
+        hr = encoder->Commit();
+        if (FAILED(hr))
+        {
+            error = L"Encoder Commit failed: " + HrMessage(hr);
+            releaseAll();
+            return false;
+        }
+
+        releaseAll();
+        return true;
+    }
+
+    bool EncodeOpaquePixelsToPngBytes(const OpaqueBitmapPixels& pixels, std::vector<BYTE>& bytes, std::wstring& error)
+    {
+        bytes.clear();
+
+        IStream* stream = nullptr;
+        HRESULT hr = CreateStreamOnHGlobal(nullptr, TRUE, &stream);
+        if (FAILED(hr))
+        {
+            error = L"CreateStreamOnHGlobal failed: " + HrMessage(hr);
+            return false;
+        }
+
+        const auto releaseStream = [&]()
+        {
+            if (stream)
+            {
+                stream->Release();
+                stream = nullptr;
+            }
+        };
+
+        if (!EncodeOpaquePixelsToPngStream(pixels, stream, error))
+        {
+            releaseStream();
+            return false;
+        }
+
+        HGLOBAL handle = nullptr;
+        hr = GetHGlobalFromStream(stream, &handle);
+        if (FAILED(hr))
+        {
+            error = L"GetHGlobalFromStream failed: " + HrMessage(hr);
+            releaseStream();
+            return false;
+        }
+
+        const SIZE_T size = static_cast<SIZE_T>(GlobalSize(handle));
+        void* data = GlobalLock(handle);
+        if (!data)
+        {
+            error = L"GlobalLock failed";
+            releaseStream();
+            return false;
+        }
+
+        bytes.resize(size);
+        memcpy(bytes.data(), data, size);
+        GlobalUnlock(handle);
+        releaseStream();
         return true;
     }
 
@@ -218,7 +474,15 @@ namespace oneshot
             return false;
         }
 
-        HBITMAP clipboardBitmap = static_cast<HBITMAP>(CopyImage(image.bitmap, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION));
+        OpaqueBitmapPixels pixels{};
+        std::wstring pixelError;
+        if (!ExtractOpaqueBitmapPixels(image.bitmap, pixels, pixelError))
+        {
+            error = pixelError;
+            return false;
+        }
+
+        HBITMAP clipboardBitmap = nullptr;
         PackedDib dib{};
         PackedDib dibV5{};
         std::vector<BYTE> pngBytes;
@@ -228,19 +492,19 @@ namespace oneshot
         std::wstring dibV5Error;
         std::wstring pngError;
 
-        if (!clipboardBitmap)
+        if (!CreateBitmapFromPixels(pixels, clipboardBitmap, bitmapError))
         {
-            bitmapError = L"CopyImage failed";
+            clipboardBitmap = nullptr;
         }
-        if (!CreatePackedDibFromBitmap(image.bitmap, false, dib, dibError))
+        if (!CreatePackedDibFromPixels(pixels, false, dib, dibError))
         {
             dib.Reset();
         }
-        if (!CreatePackedDibFromBitmap(image.bitmap, true, dibV5, dibV5Error))
+        if (!CreatePackedDibFromPixels(pixels, true, dibV5, dibV5Error))
         {
             dibV5.Reset();
         }
-        if (!EncodeBitmapToPngBytes(image.bitmap, pngBytes, pngError))
+        if (!EncodeOpaquePixelsToPngBytes(pixels, pngBytes, pngError))
         {
             pngBytes.clear();
         }
@@ -396,117 +660,13 @@ namespace oneshot
 
     bool OutputService::EncodeBitmapToPngStream(HBITMAP bitmap, IStream* stream, std::wstring& error) const
     {
-        if (!stream)
+        OpaqueBitmapPixels pixels{};
+        if (!ExtractOpaqueBitmapPixels(bitmap, pixels, error))
         {
-            error = L"stream is null";
             return false;
         }
 
-        IWICImagingFactory* factory = nullptr;
-        IWICBitmap* wicBitmap = nullptr;
-        IWICBitmapEncoder* encoder = nullptr;
-        IWICBitmapFrameEncode* frame = nullptr;
-
-        const auto releaseAll = [&]()
-        {
-            if (frame)
-            {
-                frame->Release();
-            }
-            if (encoder)
-            {
-                encoder->Release();
-            }
-            if (wicBitmap)
-            {
-                wicBitmap->Release();
-            }
-            if (factory)
-            {
-                factory->Release();
-            }
-        };
-
-        HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory));
-        if (FAILED(hr))
-        {
-            error = L"CoCreateInstance(CLSID_WICImagingFactory) failed: " + HrMessage(hr);
-            releaseAll();
-            return false;
-        }
-
-        hr = factory->CreateBitmapFromHBITMAP(bitmap, nullptr, WICBitmapUseAlpha, &wicBitmap);
-        if (FAILED(hr))
-        {
-            error = L"CreateBitmapFromHBITMAP failed: " + HrMessage(hr);
-            releaseAll();
-            return false;
-        }
-
-        hr = factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder);
-        if (FAILED(hr))
-        {
-            error = L"CreateEncoder failed: " + HrMessage(hr);
-            releaseAll();
-            return false;
-        }
-
-        hr = encoder->Initialize(stream, WICBitmapEncoderNoCache);
-        if (FAILED(hr))
-        {
-            error = L"Encoder Initialize failed: " + HrMessage(hr);
-            releaseAll();
-            return false;
-        }
-
-        IPropertyBag2* properties = nullptr;
-        hr = encoder->CreateNewFrame(&frame, &properties);
-        if (properties)
-        {
-            properties->Release();
-        }
-
-        if (FAILED(hr))
-        {
-            error = L"CreateNewFrame failed: " + HrMessage(hr);
-            releaseAll();
-            return false;
-        }
-
-        hr = frame->Initialize(nullptr);
-        if (FAILED(hr))
-        {
-            error = L"Frame Initialize failed: " + HrMessage(hr);
-            releaseAll();
-            return false;
-        }
-
-        hr = frame->WriteSource(wicBitmap, nullptr);
-        if (FAILED(hr))
-        {
-            error = L"WriteSource failed: " + HrMessage(hr);
-            releaseAll();
-            return false;
-        }
-
-        hr = frame->Commit();
-        if (FAILED(hr))
-        {
-            error = L"Frame Commit failed: " + HrMessage(hr);
-            releaseAll();
-            return false;
-        }
-
-        hr = encoder->Commit();
-        if (FAILED(hr))
-        {
-            error = L"Encoder Commit failed: " + HrMessage(hr);
-            releaseAll();
-            return false;
-        }
-
-        releaseAll();
-        return true;
+        return EncodeOpaquePixelsToPngStream(pixels, stream, error);
     }
 
     bool OutputService::EncodeBitmapToPngBytes(HBITMAP bitmap, std::vector<BYTE>& bytes, std::wstring& error) const
