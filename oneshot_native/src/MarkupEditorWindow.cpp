@@ -22,13 +22,7 @@ namespace
     constexpr double kFitPaddingFactor = 1.0;
     constexpr double kZoomStep = 1.1;
 
-    constexpr int kToolPenId = 2001;
-    constexpr int kToolLineId = 2002;
-    constexpr int kToolArrowId = 2003;
-    constexpr int kToolRectId = 2004;
-    constexpr int kToolEllipseId = 2005;
-    constexpr int kToolPolygonId = 2006;
-    constexpr int kToolTextId = 2007;
+    constexpr int kToolComboId = 2001;
     constexpr int kUndoId = 2010;
     constexpr int kRedoId = 2011;
     constexpr int kCopyId = 2012;
@@ -276,13 +270,7 @@ namespace
     std::vector<ToolbarControlSpec> GetToolControlSpecs()
     {
         return {
-            { kToolPenId, 54 },
-            { kToolLineId, 54 },
-            { kToolArrowId, 60 },
-            { kToolRectId, 54 },
-            { kToolEllipseId, 68 },
-            { kToolPolygonId, 56 },
-            { kToolTextId, 54 }
+            { kToolComboId, 120, true }
         };
     }
 
@@ -421,6 +409,52 @@ namespace
             oneshot::MarkupEditorWindow::Tool::Polygon,
             oneshot::MarkupEditorWindow::Tool::Text
         };
+    }
+
+    const wchar_t* GetToolDisplayLabel(oneshot::MarkupEditorWindow::Tool tool)
+    {
+        switch (tool)
+        {
+        case oneshot::MarkupEditorWindow::Tool::Pen:
+            return L"Pen";
+        case oneshot::MarkupEditorWindow::Tool::Line:
+            return L"Line";
+        case oneshot::MarkupEditorWindow::Tool::Arrow:
+            return L"Arrow";
+        case oneshot::MarkupEditorWindow::Tool::Rectangle:
+            return L"Rect";
+        case oneshot::MarkupEditorWindow::Tool::Ellipse:
+            return L"Ellipse";
+        case oneshot::MarkupEditorWindow::Tool::Polygon:
+            return L"Poly";
+        case oneshot::MarkupEditorWindow::Tool::Text:
+            return L"Text";
+        default:
+            return L"Pen";
+        }
+    }
+
+    int GetToolComboIndex(oneshot::MarkupEditorWindow::Tool tool)
+    {
+        const auto tools = GetAllMarkupTools();
+        const auto it = std::find(tools.begin(), tools.end(), tool);
+        if (it == tools.end())
+        {
+            return 0;
+        }
+
+        return static_cast<int>(std::distance(tools.begin(), it));
+    }
+
+    oneshot::MarkupEditorWindow::Tool GetToolForComboIndex(int index)
+    {
+        const auto tools = GetAllMarkupTools();
+        if (index < 0 || index >= static_cast<int>(tools.size()))
+        {
+            return oneshot::MarkupEditorWindow::Tool::Pen;
+        }
+
+        return tools[static_cast<size_t>(index)];
     }
 
     int GetWidestOptionsGroupWidth(UINT dpi)
@@ -621,6 +655,7 @@ namespace oneshot
         OutputService* outputService{nullptr};
         MarkupEditorSettingsStore* settingsStore{nullptr};
         COLORREF customColors[16]{};
+        HWND toolCombo{nullptr};
         HWND fontCombo{nullptr};
         HWND thicknessPreview{nullptr};
         HWND thicknessSlider{nullptr};
@@ -1007,6 +1042,21 @@ namespace oneshot
         {
             SendMessageW(combo, CB_SETCURSEL, 0, 0);
         }
+    }
+
+    static void PopulateToolCombo(HWND combo, MarkupEditorWindow::Tool selectedTool)
+    {
+        if (!combo)
+        {
+            return;
+        }
+
+        for (const auto tool : GetAllMarkupTools())
+        {
+            SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(GetToolDisplayLabel(tool)));
+        }
+
+        SendMessageW(combo, CB_SETCURSEL, GetToolComboIndex(selectedTool), 0);
     }
 
     static std::vector<int> GetMarkupButtonIds();
@@ -1591,7 +1641,6 @@ namespace oneshot
     static std::vector<int> GetMarkupButtonIds()
     {
         return {
-            kToolPenId, kToolLineId, kToolArrowId, kToolRectId, kToolEllipseId, kToolPolygonId, kToolTextId,
             kStrokeColorId, kFillColorId, kTextColorId, kFillToggleId, kThicknessPreviewId,
             kFontDownId, kFontUpId, kFitId, kUndoId, kRedoId, kCopyId, kDoneId, kCancelId,
             kPromptOkId, kPromptCancelId
@@ -1658,6 +1707,10 @@ namespace oneshot
         if (state.fontCombo)
         {
             SendMessageW(state.fontCombo, WM_SETFONT, reinterpret_cast<WPARAM>(state.uiFont), TRUE);
+        }
+        if (state.toolCombo)
+        {
+            SendMessageW(state.toolCombo, WM_SETFONT, reinterpret_cast<WPARAM>(state.uiFont), TRUE);
         }
     }
 
@@ -2470,21 +2523,19 @@ namespace oneshot
         }
     }
 
-    static void UpdateToolButtons(MarkupEditorWindow::State& state)
+    static void SyncToolComboSelection(MarkupEditorWindow::State& state)
     {
-        CheckRadioButton(state.hwnd, kToolPenId, kToolTextId,
-            state.tool == MarkupEditorWindow::Tool::Pen ? kToolPenId :
-            state.tool == MarkupEditorWindow::Tool::Line ? kToolLineId :
-            state.tool == MarkupEditorWindow::Tool::Arrow ? kToolArrowId :
-            state.tool == MarkupEditorWindow::Tool::Rectangle ? kToolRectId :
-            state.tool == MarkupEditorWindow::Tool::Ellipse ? kToolEllipseId :
-            state.tool == MarkupEditorWindow::Tool::Polygon ? kToolPolygonId :
-            kToolTextId);
+        if (!state.toolCombo)
+        {
+            return;
+        }
+
+        SendMessageW(state.toolCombo, CB_SETCURSEL, GetToolComboIndex(state.tool), 0);
     }
 
     static void RefreshToolSelectionUi(MarkupEditorWindow::State& state)
     {
-        UpdateToolButtons(state);
+        SyncToolComboSelection(state);
         SyncToolOptionControls(state);
         LayoutToolbarControls(state);
         InvalidateRect(state.hwnd, nullptr, FALSE);
@@ -2740,13 +2791,7 @@ namespace oneshot
         }
         case WM_CREATE:
             ApplyModernWindowFrame(hwnd);
-            CreateWindowExW(0, L"Button", L"Pen", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kToolPenId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Line", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kToolLineId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Arrow", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kToolArrowId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Rect", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kToolRectId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Ellipse", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kToolEllipseId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Poly", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kToolPolygonId)), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"Button", L"Text", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kToolTextId)), GetModuleHandleW(nullptr), nullptr);
+            state->toolCombo = CreateWindowExW(0, L"ComboBox", nullptr, WS_CHILD | WS_VISIBLE | WS_VSCROLL | CBS_DROPDOWNLIST | WS_TABSTOP, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kToolComboId)), GetModuleHandleW(nullptr), nullptr);
             CreateWindowExW(0, L"Button", L"Stroke", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kStrokeColorId)), GetModuleHandleW(nullptr), nullptr);
             CreateWindowExW(0, L"Button", L"Fill", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFillColorId)), GetModuleHandleW(nullptr), nullptr);
             CreateWindowExW(0, L"Button", L"Text", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTextColorId)), GetModuleHandleW(nullptr), nullptr);
@@ -2789,13 +2834,14 @@ namespace oneshot
             {
                 SetWindowSubclass(state->thicknessPreview, ThicknessPreviewProc, 0, reinterpret_cast<DWORD_PTR>(state));
             }
+            PopulateToolCombo(state->toolCombo, state->tool);
             PopulateFontCombo(state->fontCombo, state->textSettings.fontFace);
             ApplyToolbarFonts(*state);
             ConfigureActionTooltips(*state);
             SyncToolOptionControls(*state);
             LayoutToolbarControls(*state);
             FitImageToViewport(*state);
-            UpdateToolButtons(*state);
+            SyncToolComboSelection(*state);
             return 0;
         case WM_SIZE:
             if (state->canvas)
@@ -2839,26 +2885,15 @@ namespace oneshot
         case WM_COMMAND:
             switch (LOWORD(wParam))
             {
-            case kToolPenId:
-                SetActiveTool(*state, Tool::Pen);
-                return 0;
-            case kToolLineId:
-                SetActiveTool(*state, Tool::Line);
-                return 0;
-            case kToolArrowId:
-                SetActiveTool(*state, Tool::Arrow);
-                return 0;
-            case kToolRectId:
-                SetActiveTool(*state, Tool::Rectangle);
-                return 0;
-            case kToolEllipseId:
-                SetActiveTool(*state, Tool::Ellipse);
-                return 0;
-            case kToolPolygonId:
-                SetActiveTool(*state, Tool::Polygon);
-                return 0;
-            case kToolTextId:
-                SetActiveTool(*state, Tool::Text);
+            case kToolComboId:
+                if (HIWORD(wParam) == CBN_SELCHANGE)
+                {
+                    const LRESULT selection = SendMessageW(state->toolCombo, CB_GETCURSEL, 0, 0);
+                    if (selection != CB_ERR)
+                    {
+                        SetActiveTool(*state, GetToolForComboIndex(static_cast<int>(selection)));
+                    }
+                }
                 return 0;
             case kUndoId:
                 if (!state->undoStack.empty())
