@@ -1,11 +1,11 @@
 # OneShot
 
-OneShot is a Windows screenshot daemon app implemented as a native C++ Win32 desktop application.
+OneShot is a Windows screenshot tray app built as a native C++20 Win32 desktop application.
 
-## What It Does
+## Features
 
 - Runs as a tray daemon until exit.
-- Accepts command activation: `OneShot.exe snapshot`.
+- Accepts command activation with `OneShot.exe snapshot`.
 - Supports drag-to-select region capture across the desktop.
 - Shows custom notification cards with draggable thumbnails.
 - Opens a native markup editor with pen, shape, arrow, polygon, and text tools.
@@ -18,7 +18,7 @@ cmake -S .\oneshot_native -B .\artifacts\native-build -G "Visual Studio 17 2022"
 cmake --build .\artifacts\native-build --config Release
 ```
 
-To build the shipping MSI:
+## Build The MSI
 
 ```powershell
 powershell .\installer\build-msi.ps1
@@ -36,14 +36,10 @@ Trigger a snapshot from another process:
 .\artifacts\native-build\Release\oneshot.exe snapshot
 ```
 
-## Archived Managed Version
+## Usage Notes
 
-The previous Avalonia/C# implementation is archived under `archived_csharp/` for reference and comparison:
-
-```powershell
-dotnet build .\archived_csharp\OneShot.slnx
-dotnet test .\archived_csharp\OneShot.Tests\OneShot.Tests.csproj --no-build
-```
+- If OneShot is already running, `snapshot` is forwarded through named pipe IPC.
+- If OneShot is not running, launching with `snapshot` starts the daemon and triggers capture.
 
 ## AutoHotkey Example
 
@@ -51,8 +47,3 @@ dotnet test .\archived_csharp\OneShot.Tests\OneShot.Tests.csproj --no-build
 #s::Run "C:\Path\To\OneShot.exe snapshot"
 !q::Run "C:\Path\To\OneShot.exe snapshot"
 ```
-
-## Notes
-
-- If OneShot is already running, `snapshot` is forwarded through named pipe IPC.
-- If OneShot is not running, launching with `snapshot` starts the daemon and triggers capture.

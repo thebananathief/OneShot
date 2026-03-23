@@ -5,7 +5,6 @@
 - `oneshot_native/src/` contains Win32 app code, rendering, capture, IPC, notifications, and editor logic.
 - `oneshot_native/include/oneshot_native/` contains public headers shared across the native app.
 - `installer/` contains WiX installer sources and packaging scripts for the production MSI.
-- `archived_csharp/` contains the archived Avalonia/C# implementation and tests kept for reference only.
 - `artifacts/` is build output for native binaries and MSI artifacts; avoid committing generated files.
 - `.tools/` contains local toolchain downloads and should not be treated as source.
 
@@ -15,8 +14,6 @@
 - `powershell .\installer\build-msi.ps1` builds the native app, publishes `artifacts\publish\OneShot.exe`, and produces `artifacts\OneShot.msi`.
 - `.\artifacts\native-build\Release\oneshot.exe` runs the native tray daemon locally after a successful build.
 - `.\artifacts\native-build\Release\oneshot.exe snapshot` runs and triggers capture flow against the native app.
-- `dotnet build .\archived_csharp\OneShot.slnx` builds the archived managed implementation if historical comparison is needed.
-- `dotnet test .\archived_csharp\OneShot.Tests\OneShot.Tests.csproj --no-build` runs the archived managed tests.
 
 ## Commit Guidelines
 - Use Conventional Commit messages: `<type>(optional-scope): <summary>`.
@@ -34,7 +31,6 @@
 
 ## Workflow
 - **Required for completion:** after any code change, always run a rebuild + reinstall cycle before reporting work complete.
-- As part of completion workflow, run the archived regression tests when the archived C# code or shared installer behavior changes: `dotnet test .\archived_csharp\OneShot.Tests\OneShot.Tests.csproj --no-build`.
 - After the workflow steps complete, run `git commit` for the finished work using the Commit Guidelines above (Conventional Commits).
 - Rebuild installer:
   - `powershell .\installer\build-msi.ps1`
@@ -61,12 +57,7 @@
 - Keep the primary UI thread ownership model intact for windows, tray interactions, clipboard, and drag/drop.
 - Preserve DPI-aware screen-pixel coordinate handling and centralize coordinate transforms.
 - Prefer adding small service abstractions over hidden global state.
-- When changing installer behavior, verify the MSI still installs the native `OneShot.exe` rather than any archived managed output.
-
-## Archived C# Notes
-- `archived_csharp/` is reference material, not the active shipping app.
-- Do not point the main installer, README, or workflow at the archived managed tree unless the change is explicitly about archival validation or historical comparison.
-- Keep paths inside `archived_csharp/` self-contained so the archived solution can still build when needed.
+- When changing installer behavior, verify the MSI still installs the native `OneShot.exe`.
 
 ## Self Improvement Notes
 
