@@ -749,6 +749,112 @@ namespace oneshot
         return client;
     }
 
+    static void DrawCursorStroke(HDC dc, POINT start, POINT end, int width, COLORREF color)
+    {
+        HPEN pen = CreatePen(PS_SOLID, width, color);
+        HGDIOBJ oldPen = SelectObject(dc, pen);
+        MoveToEx(dc, start.x, start.y, nullptr);
+        LineTo(dc, end.x, end.y);
+        SelectObject(dc, oldPen);
+        DeleteObject(pen);
+    }
+
+    static HCURSOR CreateMarkupDrawingCursor()
+    {
+        constexpr int kCursorSize = 32;
+        constexpr POINT kTipStart{ 7, 25 };
+        constexpr POINT kTipEnd{ 24, 8 };
+        constexpr POINT kFerruleStart{ 5, 27 };
+        constexpr POINT kFerruleEnd{ 9, 23 };
+        constexpr POINT kEraserStart{ 2, 30 };
+        constexpr POINT kEraserEnd{ 6, 26 };
+        constexpr POINT kWoodStart{ 24, 8 };
+        constexpr POINT kWoodEnd{ 27, 5 };
+        constexpr POINT kLeadStart{ 27, 5 };
+        constexpr POINT kLeadEnd{ 30, 2 };
+
+        HDC screenDc = GetDC(nullptr);
+        if (!screenDc)
+        {
+            return nullptr;
+        }
+
+        HDC colorDc = CreateCompatibleDC(screenDc);
+        HDC maskDc = CreateCompatibleDC(screenDc);
+        HBITMAP colorBitmap = CreateCompatibleBitmap(screenDc, kCursorSize, kCursorSize);
+        HBITMAP maskBitmap = CreateBitmap(kCursorSize, kCursorSize, 1, 1, nullptr);
+        ReleaseDC(nullptr, screenDc);
+
+        if (!colorDc || !maskDc || !colorBitmap || !maskBitmap)
+        {
+            if (colorBitmap)
+            {
+                DeleteObject(colorBitmap);
+            }
+            if (maskBitmap)
+            {
+                DeleteObject(maskBitmap);
+            }
+            if (colorDc)
+            {
+                DeleteDC(colorDc);
+            }
+            if (maskDc)
+            {
+                DeleteDC(maskDc);
+            }
+            return nullptr;
+        }
+
+        HGDIOBJ oldColorBitmap = SelectObject(colorDc, colorBitmap);
+        HGDIOBJ oldMaskBitmap = SelectObject(maskDc, maskBitmap);
+
+        RECT bounds = MakeRect(0, 0, kCursorSize, kCursorSize);
+        HBRUSH blackBrush = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
+        HBRUSH whiteBrush = static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH));
+        FillRect(colorDc, &bounds, blackBrush);
+        FillRect(maskDc, &bounds, whiteBrush);
+
+        DrawCursorStroke(colorDc, kTipStart, kTipEnd, 8, RGB(245, 194, 55));
+        DrawCursorStroke(colorDc, kFerruleStart, kFerruleEnd, 8, RGB(201, 208, 215));
+        DrawCursorStroke(colorDc, kEraserStart, kEraserEnd, 8, RGB(242, 129, 146));
+        DrawCursorStroke(colorDc, kWoodStart, kWoodEnd, 6, RGB(230, 196, 150));
+        DrawCursorStroke(colorDc, kLeadStart, kLeadEnd, 2, RGB(40, 44, 52));
+
+        DrawCursorStroke(maskDc, kTipStart, kTipEnd, 10, RGB(0, 0, 0));
+        DrawCursorStroke(maskDc, kFerruleStart, kFerruleEnd, 10, RGB(0, 0, 0));
+        DrawCursorStroke(maskDc, kEraserStart, kEraserEnd, 10, RGB(0, 0, 0));
+        DrawCursorStroke(maskDc, kWoodStart, kWoodEnd, 8, RGB(0, 0, 0));
+        DrawCursorStroke(maskDc, kLeadStart, kLeadEnd, 4, RGB(0, 0, 0));
+
+        ICONINFO cursorInfo{};
+        cursorInfo.fIcon = FALSE;
+        cursorInfo.xHotspot = static_cast<DWORD>(kLeadEnd.x);
+        cursorInfo.yHotspot = static_cast<DWORD>(kLeadEnd.y);
+        cursorInfo.hbmMask = maskBitmap;
+        cursorInfo.hbmColor = colorBitmap;
+        HCURSOR cursor = CreateIconIndirect(&cursorInfo);
+
+        SelectObject(colorDc, oldColorBitmap);
+        SelectObject(maskDc, oldMaskBitmap);
+        DeleteObject(colorBitmap);
+        DeleteObject(maskBitmap);
+        DeleteDC(colorDc);
+        DeleteDC(maskDc);
+        return cursor;
+    }
+
+    static HCURSOR GetMarkupDrawingCursor()
+    {
+        static HCURSOR cursor = CreateMarkupDrawingCursor();
+        if (!cursor)
+        {
+            cursor = LoadCursorW(nullptr, IDC_CROSS);
+        }
+
+        return cursor;
+    }
+
     static double ComputeFitZoom(HWND canvas, const CapturedImage& image)
     {
         RECT client = GetCanvasClientRect(canvas);
@@ -2575,7 +2681,7 @@ namespace oneshot
         canvasClass.lpfnWndProc = &MarkupEditorWindow::CanvasProc;
         canvasClass.hInstance = GetModuleHandleW(nullptr);
         canvasClass.lpszClassName = L"OneShotNative.MarkupCanvas";
-        canvasClass.hCursor = LoadCursorW(nullptr, IDC_CROSS);
+        canvasClass.hCursor = GetMarkupDrawingCursor();
         RegisterClassW(&canvasClass);
 
         State state{};
@@ -3114,7 +3220,7 @@ namespace oneshot
                 {
                     state->middlePanning = false;
                     ReleaseCapture();
-                    SetCursor(LoadCursorW(nullptr, IDC_CROSS));
+                    SetCursor(GetMarkupDrawingCursor());
                     return 0;
                 }
 
@@ -3191,7 +3297,7 @@ namespace oneshot
             {
                 state->middlePanning = false;
                 ReleaseCapture();
-                SetCursor(LoadCursorW(nullptr, IDC_CROSS));
+                SetCursor(GetMarkupDrawingCursor());
             }
             return 0;
         case WM_LBUTTONUP:
