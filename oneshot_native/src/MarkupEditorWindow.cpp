@@ -1688,23 +1688,32 @@ namespace oneshot
         FrameRoundedRect(dc, swatch, RGB(230, 236, 244), 8);
     }
 
-    static SIZE MeasureRenderedStrokeFootprint(const RECT& rect, int thickness, COLORREF color)
+    static SIZE MeasureRenderedStrokeFootprint(const RECT& rect, int thickness, COLORREF color, UINT dpi)
     {
         SIZE measured{};
         const int width = std::max(1, static_cast<int>(rect.right - rect.left));
         const int height = std::max(1, static_cast<int>(rect.bottom - rect.top));
         const COLORREF background = RGB(1, 2, 3);
+        const int fallbackDiameter = std::max(1, ScaleForDpi(std::max(1, thickness), dpi));
 
         HDC screenDc = GetDC(nullptr);
         if (!screenDc)
         {
-            measured.cx = std::max(1, thickness);
-            measured.cy = std::max(1, thickness);
+            measured.cx = fallbackDiameter;
+            measured.cy = fallbackDiameter;
             return measured;
         }
 
         HDC memoryDc = CreateCompatibleDC(screenDc);
-        HBITMAP bitmap = CreateCompatibleBitmap(screenDc, width, height);
+        void* pixelBits = nullptr;
+        BITMAPINFO info{};
+        info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        info.bmiHeader.biWidth = width;
+        info.bmiHeader.biHeight = -height;
+        info.bmiHeader.biPlanes = 1;
+        info.bmiHeader.biBitCount = 32;
+        info.bmiHeader.biCompression = BI_RGB;
+        HBITMAP bitmap = CreateDIBSection(screenDc, &info, DIB_RGB_COLORS, &pixelBits, nullptr, 0);
         if (!memoryDc || !bitmap)
         {
             if (bitmap)
@@ -1716,8 +1725,8 @@ namespace oneshot
                 DeleteDC(memoryDc);
             }
             ReleaseDC(nullptr, screenDc);
-            measured.cx = std::max(1, thickness);
-            measured.cy = std::max(1, thickness);
+            measured.cx = fallbackDiameter;
+            measured.cy = fallbackDiameter;
             return measured;
         }
 
@@ -1728,29 +1737,23 @@ namespace oneshot
         DeleteObject(backgroundBrush);
 
         const int centerY = height / 2;
-        const int inset = std::max(2, thickness * 2);
+        const int inset = std::min(std::max(1, width / 2), std::max(2, ScaleForDpi(4, dpi)));
+        const int startX = inset;
+        const int endX = std::max(startX + 1, width - inset);
         HPEN pen = CreatePen(PS_SOLID, std::max(1, thickness), color);
         HGDIOBJ oldPen = SelectObject(memoryDc, pen);
-        MoveToEx(memoryDc, inset, centerY, nullptr);
-        LineTo(memoryDc, std::max(inset + 1, width - inset), centerY);
+        MoveToEx(memoryDc, startX, centerY, nullptr);
+        LineTo(memoryDc, endX, centerY);
         SelectObject(memoryDc, oldPen);
         DeleteObject(pen);
 
-        BITMAPINFO info{};
-        info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-        info.bmiHeader.biWidth = width;
-        info.bmiHeader.biHeight = -height;
-        info.bmiHeader.biPlanes = 1;
-        info.bmiHeader.biBitCount = 32;
-        info.bmiHeader.biCompression = BI_RGB;
-
-        std::vector<DWORD> pixels(static_cast<size_t>(width) * static_cast<size_t>(height));
+        const auto* pixels = static_cast<const DWORD*>(pixelBits);
         bool found = false;
         int minX = width;
         int minY = height;
         int maxX = -1;
         int maxY = -1;
-        if (GetDIBits(memoryDc, bitmap, 0, static_cast<UINT>(height), pixels.data(), &info, DIB_RGB_COLORS) != 0)
+        if (pixels)
         {
             for (int y = 0; y < height; ++y)
             {
@@ -1778,8 +1781,8 @@ namespace oneshot
         }
         else
         {
-            measured.cx = std::max(1, thickness);
-            measured.cy = std::max(1, thickness);
+            measured.cx = fallbackDiameter;
+            measured.cy = fallbackDiameter;
         }
 
         SelectObject(memoryDc, previousBitmap);
@@ -1797,7 +1800,7 @@ namespace oneshot
         const int ringPadding = std::max(1, ScaleForDpi(2, dpi));
         const int ringThickness = std::max(1, ScaleForDpi(1, dpi));
         const int maximumDiameter = std::max(innerMinimumDiameter, static_cast<int>(rect.bottom - rect.top) - (inset * 2));
-        const SIZE measuredStroke = MeasureRenderedStrokeFootprint(rect, boundedThickness, color);
+        const SIZE measuredStroke = MeasureRenderedStrokeFootprint(rect, boundedThickness, color, dpi);
         const int innerDiameter = std::clamp(static_cast<int>(measuredStroke.cy), innerMinimumDiameter, maximumDiameter);
         const int ringDiameter = std::min(maximumDiameter, innerDiameter + (ringPadding * 2));
         const int centerX = (rect.left + rect.right) / 2;
