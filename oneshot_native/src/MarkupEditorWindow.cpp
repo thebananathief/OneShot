@@ -1156,6 +1156,21 @@ namespace oneshot
         }
     }
 
+    static void RedrawStrokeThicknessControls(const MarkupEditorWindow::State& state)
+    {
+        InvalidateStrokeThicknessControls(state);
+
+        if (state.thicknessPreview)
+        {
+            RedrawWindow(state.thicknessPreview, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ERASE);
+        }
+
+        if (state.thicknessSlider)
+        {
+            RedrawWindow(state.thicknessSlider, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ERASE);
+        }
+    }
+
     static void SyncStrokeThicknessControls(MarkupEditorWindow::State& state)
     {
         const bool visible = ToolUsesStrokeOptions(state.tool);
@@ -1168,7 +1183,7 @@ namespace oneshot
         }
 
         SendMessageW(state.thicknessSlider, TBM_SETPOS, TRUE, GetCurrentStrokeThickness(state));
-        InvalidateStrokeThicknessControls(state);
+        RedrawStrokeThicknessControls(state);
     }
 
     static bool ShouldShowToolControl(MarkupEditorWindow::Tool tool, int id)
@@ -2635,7 +2650,7 @@ namespace oneshot
                     if (ChooseEditorColor(hwnd, stroke.color, state->customColors))
                     {
                         PersistEditorPreferences(*state);
-                        InvalidateStrokeThicknessControls(*state);
+                        RedrawStrokeThicknessControls(*state);
                         InvalidateRect(hwnd, nullptr, FALSE);
                         InvalidateCanvas(*state);
                     }
@@ -2732,7 +2747,7 @@ namespace oneshot
                 auto& stroke = GetStrokeSettings(*state, state->tool);
                 stroke.thickness = std::clamp(static_cast<int>(SendMessageW(state->thicknessSlider, TBM_GETPOS, 0, 0)), kStrokeThicknessMin, kStrokeThicknessMax);
                 PersistEditorPreferences(*state);
-                InvalidateStrokeThicknessControls(*state);
+                RedrawStrokeThicknessControls(*state);
                 InvalidateRect(hwnd, nullptr, FALSE);
                 InvalidateCanvas(*state);
                 return 0;
