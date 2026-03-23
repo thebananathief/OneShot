@@ -2668,6 +2668,17 @@ namespace oneshot
         }
     }
 
+    static HACCEL CreateMarkupAcceleratorTable()
+    {
+        ACCEL accelerators[] =
+        {
+            { FCONTROL | FVIRTKEY, 'Z', static_cast<WORD>(kUndoId) },
+            { FCONTROL | FVIRTKEY, 'Y', static_cast<WORD>(kRedoId) },
+            { FCONTROL | FVIRTKEY, '0', static_cast<WORD>(kFitId) },
+        };
+        return CreateAcceleratorTableW(accelerators, static_cast<int>(std::size(accelerators)));
+    }
+
     std::optional<CapturedImage> MarkupEditorWindow::Edit(HWND owner, const CapturedImage& source)
     {
         WNDCLASSW windowClass{};
@@ -2727,11 +2738,20 @@ namespace oneshot
         ShowWindow(window, SW_SHOW);
         UpdateWindow(window);
 
+        HACCEL accelerators = CreateMarkupAcceleratorTable();
         MSG message{};
         while (!state.finished && GetMessageW(&message, nullptr, 0, 0))
         {
+            if (accelerators && TranslateAcceleratorW(window, accelerators, &message))
+            {
+                continue;
+            }
             TranslateMessage(&message);
             DispatchMessageW(&message);
+        }
+        if (accelerators)
+        {
+            DestroyAcceleratorTable(accelerators);
         }
 
         ClearBitmapStack(state.undoStack);
@@ -3041,26 +3061,6 @@ namespace oneshot
             state->finished = true;
             DestroyWindow(hwnd);
             return 0;
-        case WM_KEYDOWN:
-            if ((GetKeyState(VK_CONTROL) & 0x8000) != 0)
-            {
-                if (wParam == 'Z')
-                {
-                    SendMessageW(hwnd, WM_COMMAND, kUndoId, 0);
-                    return 0;
-                }
-                if (wParam == 'Y')
-                {
-                    SendMessageW(hwnd, WM_COMMAND, kRedoId, 0);
-                    return 0;
-                }
-                if (wParam == '0')
-                {
-                    SendMessageW(hwnd, WM_COMMAND, kFitId, 0);
-                    return 0;
-                }
-            }
-            break;
         case WM_PAINT:
         {
             PAINTSTRUCT paint{};
