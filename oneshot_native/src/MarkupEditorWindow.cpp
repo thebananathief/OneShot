@@ -344,7 +344,7 @@ namespace
         }
         if (ShouldShowToolbarControl(tool, kThicknessPreviewId))
         {
-            specs.push_back({ kThicknessPreviewId, 34 });
+            specs.push_back({ kThicknessPreviewId, 42 });
         }
         if (ShouldShowToolbarControl(tool, kThicknessSliderId))
         {
@@ -1269,24 +1269,10 @@ namespace oneshot
         FillRect(dc, &rect, surfaceBrush);
         DeleteObject(surfaceBrush);
 
-        RECT paintRect = rect;
-        InflateRect(&paintRect, -1, -1);
-
-        COLORREF background = kControlSurface;
-        COLORREF border = kControlBorder;
-        if (!IsWindowEnabled(hwnd))
-        {
-            background = RGB(46, 54, 67);
-            border = RGB(122, 132, 147);
-        }
-
-        FillRoundedRect(dc, paintRect, background, 12);
-        FrameRoundedRect(dc, paintRect, border, 12);
-
         if (ToolUsesStrokeOptions(state.tool))
         {
             const auto& stroke = GetStrokeSettings(state, state.tool);
-            DrawStrokePreviewDot(dc, paintRect, stroke.color, stroke.thickness, GetDpiForWindow(state.hwnd));
+            DrawStrokePreviewDot(dc, rect, stroke.color, stroke.thickness, GetDpiForWindow(state.hwnd));
         }
     }
 
@@ -1808,22 +1794,15 @@ namespace oneshot
     static void DrawStrokePreviewDot(HDC dc, const RECT& rect, COLORREF color, int thickness, UINT dpi)
     {
         const int boundedThickness = std::clamp(thickness, kStrokeThicknessMin, kStrokeThicknessMax);
-        const int inset = ScaleForDpi(6, dpi);
-        const int innerMinimumDiameter = ScaleForDpi(2, dpi);
-        const int ringPadding = std::max(1, ScaleForDpi(2, dpi));
-        const int ringThickness = std::max(1, ScaleForDpi(1, dpi));
-        const int maximumDiameter = std::max(innerMinimumDiameter, static_cast<int>(rect.bottom - rect.top) - (inset * 2));
+        const int width = std::max(1, static_cast<int>(rect.right - rect.left));
+        const int height = std::max(1, static_cast<int>(rect.bottom - rect.top));
+        const int padding = std::max(0, ScaleForDpi(1, dpi));
+        const int innerMinimumDiameter = std::max(1, ScaleForDpi(2, dpi));
+        const int maximumDiameter = std::max(innerMinimumDiameter, std::min(width, height) - (padding * 2));
         const SIZE measuredStroke = MeasureRenderedStrokeFootprint(rect, boundedThickness, color, dpi);
         const int innerDiameter = std::clamp(static_cast<int>(measuredStroke.cy), innerMinimumDiameter, maximumDiameter);
-        const int ringDiameter = std::min(maximumDiameter, innerDiameter + (ringPadding * 2));
         const int centerX = (rect.left + rect.right) / 2;
         const int centerY = (rect.top + rect.bottom) / 2;
-
-        RECT ringRect{};
-        ringRect.left = centerX - (ringDiameter / 2);
-        ringRect.top = centerY - (ringDiameter / 2);
-        ringRect.right = ringRect.left + ringDiameter;
-        ringRect.bottom = ringRect.top + ringDiameter;
 
         RECT innerRect{};
         innerRect.left = centerX - (innerDiameter / 2);
@@ -1831,22 +1810,12 @@ namespace oneshot
         innerRect.right = innerRect.left + innerDiameter;
         innerRect.bottom = innerRect.top + innerDiameter;
 
-        HBRUSH hollowBrush = static_cast<HBRUSH>(GetStockObject(HOLLOW_BRUSH));
-        HPEN ringPen = CreatePen(PS_SOLID, ringThickness, RGB(230, 236, 244));
-        HGDIOBJ previousBrush = SelectObject(dc, hollowBrush);
-        HGDIOBJ previousPen = SelectObject(dc, ringPen);
-        Ellipse(dc, ringRect.left, ringRect.top, ringRect.right, ringRect.bottom);
-        SelectObject(dc, previousPen);
-        DeleteObject(ringPen);
-
         HBRUSH fillBrush = CreateSolidBrush(color);
-        HPEN fillPen = CreatePen(PS_SOLID, 1, color);
-        previousBrush = SelectObject(dc, fillBrush);
-        previousPen = SelectObject(dc, fillPen);
+        HGDIOBJ previousBrush = SelectObject(dc, fillBrush);
+        HGDIOBJ previousPen = SelectObject(dc, GetStockObject(NULL_PEN));
         Ellipse(dc, innerRect.left, innerRect.top, innerRect.right, innerRect.bottom);
         SelectObject(dc, previousPen);
         SelectObject(dc, previousBrush);
-        DeleteObject(fillPen);
         DeleteObject(fillBrush);
     }
 
