@@ -1480,26 +1480,45 @@ namespace oneshot
 
     static void DrawStrokePreviewDot(HDC dc, const RECT& rect, COLORREF color, int thickness, UINT dpi)
     {
-        RECT dotRect = rect;
         const int boundedThickness = std::clamp(thickness, kStrokeThicknessMin, kStrokeThicknessMax);
-        const int minimumDiameter = ScaleForDpi(5, dpi);
-        const int maximumDiameter = std::max(minimumDiameter, static_cast<int>(rect.bottom - rect.top) - ScaleForDpi(8, dpi));
-        const int diameter = std::clamp(ScaleForDpi(4 + boundedThickness, dpi), minimumDiameter, maximumDiameter);
+        const int inset = ScaleForDpi(6, dpi);
+        const int innerMinimumDiameter = ScaleForDpi(2, dpi);
+        const int ringPadding = std::max(1, ScaleForDpi(2, dpi));
+        const int ringThickness = std::max(1, ScaleForDpi(1, dpi));
+        const int maximumDiameter = std::max(innerMinimumDiameter, static_cast<int>(rect.bottom - rect.top) - (inset * 2));
+        const int innerDiameter = std::clamp(ScaleForDpi(boundedThickness, dpi), innerMinimumDiameter, maximumDiameter);
+        const int ringDiameter = std::min(maximumDiameter, innerDiameter + (ringPadding * 2));
         const int centerX = (rect.left + rect.right) / 2;
         const int centerY = (rect.top + rect.bottom) / 2;
-        dotRect.left = centerX - (diameter / 2);
-        dotRect.top = centerY - (diameter / 2);
-        dotRect.right = dotRect.left + diameter;
-        dotRect.bottom = dotRect.top + diameter;
+
+        RECT ringRect{};
+        ringRect.left = centerX - (ringDiameter / 2);
+        ringRect.top = centerY - (ringDiameter / 2);
+        ringRect.right = ringRect.left + ringDiameter;
+        ringRect.bottom = ringRect.top + ringDiameter;
+
+        RECT innerRect{};
+        innerRect.left = centerX - (innerDiameter / 2);
+        innerRect.top = centerY - (innerDiameter / 2);
+        innerRect.right = innerRect.left + innerDiameter;
+        innerRect.bottom = innerRect.top + innerDiameter;
+
+        HBRUSH hollowBrush = static_cast<HBRUSH>(GetStockObject(HOLLOW_BRUSH));
+        HPEN ringPen = CreatePen(PS_SOLID, ringThickness, RGB(230, 236, 244));
+        HGDIOBJ previousBrush = SelectObject(dc, hollowBrush);
+        HGDIOBJ previousPen = SelectObject(dc, ringPen);
+        Ellipse(dc, ringRect.left, ringRect.top, ringRect.right, ringRect.bottom);
+        SelectObject(dc, previousPen);
+        DeleteObject(ringPen);
 
         HBRUSH fillBrush = CreateSolidBrush(color);
-        HPEN outlinePen = CreatePen(PS_SOLID, 1, RGB(230, 236, 244));
-        HGDIOBJ previousBrush = SelectObject(dc, fillBrush);
-        HGDIOBJ previousPen = SelectObject(dc, outlinePen);
-        Ellipse(dc, dotRect.left, dotRect.top, dotRect.right, dotRect.bottom);
+        HPEN fillPen = CreatePen(PS_SOLID, 1, color);
+        previousBrush = SelectObject(dc, fillBrush);
+        previousPen = SelectObject(dc, fillPen);
+        Ellipse(dc, innerRect.left, innerRect.top, innerRect.right, innerRect.bottom);
         SelectObject(dc, previousPen);
         SelectObject(dc, previousBrush);
-        DeleteObject(outlinePen);
+        DeleteObject(fillPen);
         DeleteObject(fillBrush);
     }
 
