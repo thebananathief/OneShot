@@ -687,6 +687,40 @@ namespace oneshot
         return point;
     }
 
+    static RECT NormalizeShapeRect(POINT start, POINT end, bool keepAspectRatio);
+
+    struct FinalizedDragGeometry
+    {
+        POINT start{};
+        POINT end{};
+    };
+
+    static FinalizedDragGeometry FinalizeDragGeometry(MarkupEditorWindow::Tool tool, POINT start, POINT end, bool shiftHeld)
+    {
+        switch (tool)
+        {
+        case MarkupEditorWindow::Tool::Line:
+        case MarkupEditorWindow::Tool::Arrow:
+            if (shiftHeld)
+            {
+                end = SnapLineEndpoint(start, end);
+            }
+            break;
+        case MarkupEditorWindow::Tool::Rectangle:
+        case MarkupEditorWindow::Tool::Ellipse:
+        {
+            const RECT rect = NormalizeShapeRect(start, end, shiftHeld);
+            start = { rect.left, rect.top };
+            end = { rect.right, rect.bottom };
+            break;
+        }
+        default:
+            break;
+        }
+
+        return { start, end };
+    }
+
     static RECT NormalizeShapeRect(POINT start, POINT end, bool keepAspectRatio)
     {
         RECT rect{};
@@ -1223,6 +1257,38 @@ namespace oneshot
         RedrawStrokeThicknessControls(state);
     }
 
+    static void DrawStrokePreviewDot(HDC dc, const RECT& rect, COLORREF color, int thickness, UINT dpi);
+
+    static void PaintThicknessPreviewControl(const MarkupEditorWindow::State& state, HWND hwnd, HDC dc)
+    {
+        RECT rect{};
+        GetClientRect(hwnd, &rect);
+
+        HBRUSH surfaceBrush = CreateSolidBrush(kToolbarPanel);
+        FillRect(dc, &rect, surfaceBrush);
+        DeleteObject(surfaceBrush);
+
+        RECT paintRect = rect;
+        InflateRect(&paintRect, -1, -1);
+
+        COLORREF background = kControlSurface;
+        COLORREF border = kControlBorder;
+        if (!IsWindowEnabled(hwnd))
+        {
+            background = RGB(46, 54, 67);
+            border = RGB(122, 132, 147);
+        }
+
+        FillRoundedRect(dc, paintRect, background, 12);
+        FrameRoundedRect(dc, paintRect, border, 12);
+
+        if (ToolUsesStrokeOptions(state.tool))
+        {
+            const auto& stroke = GetStrokeSettings(state, state.tool);
+            DrawStrokePreviewDot(dc, paintRect, stroke.color, stroke.thickness, GetDpiForWindow(state.hwnd));
+        }
+    }
+
     static LRESULT CALLBACK ThicknessSliderProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR refData)
     {
         auto* state = reinterpret_cast<MarkupEditorWindow::State*>(refData);
@@ -1272,6 +1338,36 @@ namespace oneshot
         }
         case WM_NCDESTROY:
             RemoveWindowSubclass(hwnd, ThicknessSliderProc, 0);
+            break;
+        default:
+            break;
+        }
+
+        return DefSubclassProc(hwnd, message, wParam, lParam);
+    }
+
+    static LRESULT CALLBACK ThicknessPreviewProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR refData)
+    {
+        auto* state = reinterpret_cast<MarkupEditorWindow::State*>(refData);
+        switch (message)
+        {
+        case WM_ERASEBKGND:
+            return TRUE;
+        case WM_PAINT:
+        {
+            if (!state)
+            {
+                break;
+            }
+
+            PAINTSTRUCT paint{};
+            HDC dc = BeginPaint(hwnd, &paint);
+            PaintThicknessPreviewControl(*state, hwnd, dc);
+            EndPaint(hwnd, &paint);
+            return 0;
+        }
+        case WM_NCDESTROY:
+            RemoveWindowSubclass(hwnd, ThicknessPreviewProc, 0);
             break;
         default:
             break;
@@ -1507,6 +1603,11 @@ namespace oneshot
         {
             HWND control = GetDlgItem(state.hwnd, id);
             if (!control)
+            {
+                continue;
+            }
+
+            if (id == kThicknessPreviewId)
             {
                 continue;
             }
@@ -2418,8 +2519,10 @@ namespace oneshot
         {
             const POINT start = ClientToImagePoint(state.imageRect, state.currentImage, state.zoom, state.dragStart);
             const POINT end = ClientToImagePoint(state.imageRect, state.currentImage, state.zoom, state.dragCurrent);
-            POINT previewStart = ImagePointToClientPoint(canvasRect, state.zoom, start);
-            POINT previewEnd = ImagePointToClientPoint(canvasRect, state.zoom, end);
+            const bool shiftHeld = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+            const FinalizedDragGeometry geometry = FinalizeDragGeometry(state.tool, start, end, shiftHeld);
+            const POINT previewStart = ImagePointToClientPoint(canvasRect, state.zoom, geometry.start);
+            const POINT previewEnd = ImagePointToClientPoint(canvasRect, state.zoom, geometry.end);
 
             const auto& stroke = GetStrokeSettings(state, state.tool);
             const int previewThickness = GetCanvasPreviewStrokeThickness(state, stroke.thickness);
@@ -2433,35 +2536,26 @@ namespace oneshot
                 SelectObject(targetDc, oldBrush);
                 oldBrush = SelectObject(targetDc, shape->fillEnabled ? fillBrush : GetStockObject(HOLLOW_BRUSH));
             }
-            const bool keepAspectRatio = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
             switch (state.tool)
             {
             case MarkupEditorWindow::Tool::Line:
             {
-                if (keepAspectRatio)
-                {
-                    previewEnd = SnapLineEndpoint(previewStart, previewEnd);
-                }
                 MoveToEx(targetDc, previewStart.x, previewStart.y, nullptr);
                 LineTo(targetDc, previewEnd.x, previewEnd.y);
                 break;
             }
             case MarkupEditorWindow::Tool::Arrow:
-                if (keepAspectRatio)
-                {
-                    previewEnd = SnapLineEndpoint(previewStart, previewEnd);
-                }
                 MarkupEditorWindow::DrawArrow(targetDc, previewStart, previewEnd, stroke.color, previewThickness);
                 break;
             case MarkupEditorWindow::Tool::Rectangle:
             {
-                RECT rect = NormalizeShapeRect(previewStart, previewEnd, keepAspectRatio);
+                RECT rect = NormalizeShapeRect(previewStart, previewEnd, false);
                 Rectangle(targetDc, rect.left, rect.top, rect.right, rect.bottom);
                 break;
             }
             case MarkupEditorWindow::Tool::Ellipse:
             {
-                RECT rect = NormalizeShapeRect(previewStart, previewEnd, keepAspectRatio);
+                RECT rect = NormalizeShapeRect(previewStart, previewEnd, false);
                 Ellipse(targetDc, rect.left, rect.top, rect.right, rect.bottom);
                 break;
             }
@@ -2601,7 +2695,7 @@ namespace oneshot
             CreateWindowExW(0, L"Button", L"Fill", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFillColorId)), GetModuleHandleW(nullptr), nullptr);
             CreateWindowExW(0, L"Button", L"Text", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTextColorId)), GetModuleHandleW(nullptr), nullptr);
             CreateWindowExW(0, L"Button", L"Fill", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFillToggleId)), GetModuleHandleW(nullptr), nullptr);
-            state->thicknessPreview = CreateWindowExW(0, L"Button", L"", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kThicknessPreviewId)), GetModuleHandleW(nullptr), nullptr);
+            state->thicknessPreview = CreateWindowExW(0, L"Static", L"", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kThicknessPreviewId)), GetModuleHandleW(nullptr), nullptr);
             state->thicknessSlider = CreateWindowExW(0, TRACKBAR_CLASSW, L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | TBS_HORZ | TBS_NOTICKS, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kThicknessSliderId)), GetModuleHandleW(nullptr), nullptr);
             CreateWindowExW(0, L"Button", L"F-", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFontDownId)), GetModuleHandleW(nullptr), nullptr);
             CreateWindowExW(0, L"Button", L"F+", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFontUpId)), GetModuleHandleW(nullptr), nullptr);
@@ -2634,6 +2728,10 @@ namespace oneshot
                 SendMessageW(state->thicknessSlider, TBM_SETPOS, TRUE, GetCurrentStrokeThickness(*state));
                 SetWindowTheme(state->thicknessSlider, L"", L"");
                 SetWindowSubclass(state->thicknessSlider, ThicknessSliderProc, 0, reinterpret_cast<DWORD_PTR>(state));
+            }
+            if (state->thicknessPreview)
+            {
+                SetWindowSubclass(state->thicknessPreview, ThicknessPreviewProc, 0, reinterpret_cast<DWORD_PTR>(state));
             }
             PopulateFontCombo(state->fontCombo, state->textSettings.fontFace);
             ApplyToolbarFonts(*state);
@@ -3121,18 +3219,9 @@ namespace oneshot
                     PushUndoState(*state);
                     POINT start = ClientToImagePoint(state->imageRect, state->currentImage, state->zoom, state->dragStart);
                     POINT end = ClientToImagePoint(state->imageRect, state->currentImage, state->zoom, point);
-                    const bool keepAspectRatio = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
-                    if (state->tool == Tool::Line || state->tool == Tool::Arrow)
-                    {
-                        end = SnapLineEndpoint(start, end);
-                    }
-                    else if (state->tool == Tool::Rectangle || state->tool == Tool::Ellipse)
-                    {
-                        const RECT rect = NormalizeShapeRect(start, end, keepAspectRatio);
-                        start = { rect.left, rect.top };
-                        end = { rect.right, rect.bottom };
-                    }
-                    CommitPreview(*state, start, end);
+                    const bool shiftHeld = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                    const FinalizedDragGeometry geometry = FinalizeDragGeometry(state->tool, start, end, shiftHeld);
+                    CommitPreview(*state, geometry.start, geometry.end);
                     state->previewActive = false;
                     InvalidateCanvas(*state);
                 }
