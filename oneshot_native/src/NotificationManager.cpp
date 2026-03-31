@@ -536,7 +536,7 @@ namespace oneshot
                     notification->dragInProgress = true;
                     notification->pointerDown = false;
                     ReleaseThumbnailPointerCapture(notification);
-                    notification->manager->StartDrag(notification);
+                    notification->manager->StartDrag(notification, hwnd);
                     ResetThumbnailDragState(notification);
                 }
             }
@@ -931,7 +931,7 @@ namespace oneshot
         }
     }
 
-    void NotificationManager::StartDrag(NotificationWindow* notification)
+    void NotificationManager::StartDrag(NotificationWindow* notification, HWND sourceWindow)
     {
         if (!notification || !notification->hwnd || !IsWindow(notification->hwnd))
         {
@@ -946,7 +946,7 @@ namespace oneshot
         BringNotificationToTopmostFront(notification);
 
         std::wstring error;
-        const bool started = _dragDrop.StartFileDrag(notification->hwnd, notification->dragPath, error);
+        const bool started = _dragDrop.StartFileDrag(sourceWindow, notification->dragPath, error);
         RepositionAll();
         if (!started && !error.empty())
         {

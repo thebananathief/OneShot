@@ -458,7 +458,7 @@ namespace
 
 namespace oneshot
 {
-    bool DragDropService::StartFileDrag(HWND sourceWindow, const std::filesystem::path& filePath, std::wstring& error) const
+    bool DragDropService::StartFileDrag(HWND originWindow, const std::filesystem::path& filePath, std::wstring& error) const
     {
         error.clear();
 
@@ -475,9 +475,19 @@ namespace oneshot
             return false;
         }
 
-        if (sourceWindow)
+        HWND foregroundWindow = nullptr;
+        if (originWindow && IsWindow(originWindow))
         {
-            SetForegroundWindow(sourceWindow);
+            foregroundWindow = GetAncestor(originWindow, GA_ROOT);
+            if (!foregroundWindow || !IsWindow(foregroundWindow))
+            {
+                foregroundWindow = originWindow;
+            }
+        }
+
+        if (foregroundWindow)
+        {
+            SetForegroundWindow(foregroundWindow);
         }
 
         auto* dataObject = new FileDataObject(filePath);

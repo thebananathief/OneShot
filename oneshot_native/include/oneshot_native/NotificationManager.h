@@ -35,7 +35,7 @@ namespace oneshot
         void Show(HWND owner, CapturedImage image, const std::filesystem::path& savedPath, const std::filesystem::path& dragPath);
         void CloseAll();
         void CloseNotification(NotificationWindow* notification);
-        void StartDrag(NotificationWindow* notification);
+        void StartDrag(NotificationWindow* notification, HWND sourceWindow);
         void OpenMarkup(NotificationWindow* notification);
         [[nodiscard]] const NotificationDebugState& GetDebugState() const noexcept { return _debugState; }
 
