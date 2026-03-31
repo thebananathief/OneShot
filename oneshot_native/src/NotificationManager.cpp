@@ -625,6 +625,9 @@ namespace oneshot
             DrawNotificationButton(*notification, *draw);
             return TRUE;
         }
+        case WM_SIZE:
+            ApplyNotificationRegions(notification);
+            return 0;
         case WM_COMMAND:
             switch (LOWORD(wParam))
             {
