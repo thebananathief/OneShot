@@ -312,6 +312,19 @@ namespace oneshot
         addTool(notification->markupButton, kMarkupButtonLabel);
     }
 
+    static void ReleaseThumbnailPointerCapture(NotificationManager::NotificationWindow* notification)
+    {
+        if (!notification)
+        {
+            return;
+        }
+
+        if (GetCapture() == notification->thumbnail)
+        {
+            ReleaseCapture();
+        }
+    }
+
     static void ResetThumbnailDragState(NotificationManager::NotificationWindow* notification)
     {
         if (!notification)
@@ -321,10 +334,7 @@ namespace oneshot
 
         notification->pointerDown = false;
         notification->dragInProgress = false;
-        if (GetCapture() == notification->thumbnail)
-        {
-            ReleaseCapture();
-        }
+        ReleaseThumbnailPointerCapture(notification);
     }
 
     static void ConfigureButton(HWND button, HFONT font)
@@ -524,6 +534,8 @@ namespace oneshot
                 if (abs(point.x - notification->dragAnchor.x) >= kDragThreshold || abs(point.y - notification->dragAnchor.y) >= kDragThreshold)
                 {
                     notification->dragInProgress = true;
+                    notification->pointerDown = false;
+                    ReleaseThumbnailPointerCapture(notification);
                     notification->manager->StartDrag(notification);
                     ResetThumbnailDragState(notification);
                 }
@@ -540,7 +552,6 @@ namespace oneshot
             ResetThumbnailDragState(notification);
             return 0;
         case WM_LBUTTONDOWN:
-            BringNotificationToTopmostFront(notification);
             notification->pointerDown = true;
             notification->dragInProgress = false;
             notification->dragAnchor = POINT{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
