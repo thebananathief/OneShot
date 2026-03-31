@@ -2,8 +2,23 @@
 
 #include <ole2.h>
 
+namespace
+{
+    void EnablePerMonitorDpiAwareness()
+    {
+        if (SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2))
+        {
+            return;
+        }
+
+        (void)SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE);
+    }
+}
+
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
 {
+    EnablePerMonitorDpiAwareness();
+
     const HRESULT initHr = OleInitialize(nullptr);
     if (FAILED(initHr))
     {

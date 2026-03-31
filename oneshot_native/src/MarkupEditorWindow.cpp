@@ -2852,6 +2852,28 @@ namespace oneshot
                 InvalidateCanvas(*state);
             }
             return 0;
+        case WM_DPICHANGED:
+        {
+            const auto* suggestedRect = reinterpret_cast<RECT*>(lParam);
+            if (suggestedRect)
+            {
+                SetWindowPos(
+                    hwnd,
+                    nullptr,
+                    suggestedRect->left,
+                    suggestedRect->top,
+                    suggestedRect->right - suggestedRect->left,
+                    suggestedRect->bottom - suggestedRect->top,
+                    SWP_NOACTIVATE | SWP_NOZORDER);
+            }
+
+            ApplyToolbarFonts(*state);
+            LayoutToolbarControls(*state);
+            UpdateZoomBounds(*state, !state->userAdjustedViewport);
+            RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN);
+            InvalidateCanvas(*state);
+            return 0;
+        }
         case WM_CTLCOLORSTATIC:
         case WM_CTLCOLOREDIT:
         {
