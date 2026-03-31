@@ -258,20 +258,7 @@ namespace oneshot
             _tray.ShowBalloon(L"OneShot", message);
         }
 
-        std::filesystem::path dragPath;
-        std::wstring dragError;
-        const auto candidateDragPath = _tempFileManager.CreateDragImagePath();
-        if (_outputService.SavePng(*capture, candidateDragPath, dragError))
-        {
-            dragPath = candidateDragPath;
-        }
-        else
-        {
-            const auto message = std::wstring(L"Saved screenshot, but temp drag image failed: ") + dragError;
-            _tray.ShowBalloon(L"OneShot", message);
-        }
-
-        _notificationManager.Show(_hwnd, std::move(*capture), savedPath, dragPath);
+        _notificationManager.Show(_hwnd, std::move(*capture), savedPath, savedPath);
         if (_notificationManager.GetDebugState().showAttempted && !_notificationManager.GetDebugState().windowVisible)
         {
             _tray.ShowBalloon(L"OneShot", L"Screenshot saved, but notification failed to display.");

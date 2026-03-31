@@ -1009,13 +1009,6 @@ namespace oneshot
             return;
         }
 
-        std::wstring dragError;
-        if (!_outputService.SavePng(*updatedImage, notification->dragPath, dragError))
-        {
-            MessageBoxW(notification->hwnd, dragError.c_str(), kAppName, MB_OK | MB_ICONERROR);
-            return;
-        }
-
         notification->image = std::move(*updatedImage);
         InvalidateRect(notification->thumbnail, nullptr, TRUE);
         KillTimer(notification->hwnd, kPulseTimerId);
@@ -1076,8 +1069,6 @@ namespace oneshot
             (*it)->hwnd = nullptr;
         }
 
-        std::error_code error;
-        std::filesystem::remove((*it)->dragPath, error);
         _notifications.erase(it);
         RepositionAll();
     }

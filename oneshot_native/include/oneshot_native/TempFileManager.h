@@ -10,7 +10,6 @@ namespace oneshot
         explicit TempFileManager(AppPaths paths);
 
         void Initialize() const;
-        [[nodiscard]] std::filesystem::path CreateDragImagePath() const;
         [[nodiscard]] const AppPaths& Paths() const noexcept;
 
     private:
