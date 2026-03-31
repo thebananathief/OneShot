@@ -24,6 +24,40 @@ namespace
         WriteConsoleW(output, text.c_str(), static_cast<DWORD>(text.size()), &written, nullptr);
         FreeConsole();
     }
+
+    std::optional<oneshot::NotificationAnchor> NotificationAnchorFromMenuId(UINT_PTR menuId)
+    {
+        switch (menuId)
+        {
+        case oneshot::kTrayMenuNotificationAnchorTopLeft:
+            return oneshot::NotificationAnchor::TopLeft;
+        case oneshot::kTrayMenuNotificationAnchorBottomLeft:
+            return oneshot::NotificationAnchor::BottomLeft;
+        case oneshot::kTrayMenuNotificationAnchorTopRight:
+            return oneshot::NotificationAnchor::TopRight;
+        case oneshot::kTrayMenuNotificationAnchorBottomRight:
+            return oneshot::NotificationAnchor::BottomRight;
+        default:
+            return std::nullopt;
+        }
+    }
+
+    std::optional<oneshot::NotificationGrowDirection> NotificationGrowDirectionFromMenuId(UINT_PTR menuId)
+    {
+        switch (menuId)
+        {
+        case oneshot::kTrayMenuNotificationGrowLeft:
+            return oneshot::NotificationGrowDirection::Left;
+        case oneshot::kTrayMenuNotificationGrowRight:
+            return oneshot::NotificationGrowDirection::Right;
+        case oneshot::kTrayMenuNotificationGrowUp:
+            return oneshot::NotificationGrowDirection::Up;
+        case oneshot::kTrayMenuNotificationGrowDown:
+            return oneshot::NotificationGrowDirection::Down;
+        default:
+            return std::nullopt;
+        }
+    }
 }
 
 namespace oneshot
@@ -368,7 +402,27 @@ namespace oneshot
             }
             break;
         case WM_COMMAND:
-            switch (LOWORD(wParam))
+        {
+            const UINT_PTR commandId = LOWORD(wParam);
+            if (const auto anchor = NotificationAnchorFromMenuId(commandId))
+            {
+                const auto currentPlacement = self->_notificationManager.GetPlacement();
+                self->_notificationManager.SetPlacement(CoercePlacementForAnchor(*anchor, currentPlacement.growDirection));
+                return 0;
+            }
+
+            if (const auto growDirection = NotificationGrowDirectionFromMenuId(commandId))
+            {
+                auto placement = self->_notificationManager.GetPlacement();
+                if (IsValidGrowDirection(placement.anchor, *growDirection))
+                {
+                    placement.growDirection = *growDirection;
+                    self->_notificationManager.SetPlacement(placement);
+                }
+                return 0;
+            }
+
+            switch (commandId)
             {
             case kTrayMenuSnapshot:
                 self->HandleSnapshotRequested();
@@ -383,6 +437,7 @@ namespace oneshot
                 break;
             }
             break;
+        }
         case kWindowMessageTrayIcon:
             if (LOWORD(lParam) == WM_LBUTTONDBLCLK)
             {
@@ -391,7 +446,7 @@ namespace oneshot
             }
             if (LOWORD(lParam) == WM_RBUTTONUP || LOWORD(lParam) == WM_CONTEXTMENU)
             {
-                self->_tray.ShowContextMenu(hwnd);
+                self->_tray.ShowContextMenu(hwnd, self->_notificationManager.GetPlacement());
                 return 0;
             }
             break;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "oneshot_native/Common.h"
+#include "oneshot_native/NotificationPlacement.h"
 
 namespace oneshot
 {
@@ -13,7 +14,7 @@ namespace oneshot
         bool Initialize(HWND hwnd);
         void Dispose();
         void Restore(HWND hwnd);
-        void ShowContextMenu(HWND hwnd) const;
+        void ShowContextMenu(HWND hwnd, const NotificationPlacement& placement) const;
         void ShowBalloon(std::wstring_view title, std::wstring_view text) const;
         [[nodiscard]] UINT ExplorerRestartMessage() const noexcept { return _explorerRestartMessage; }
 

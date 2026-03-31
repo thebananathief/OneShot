@@ -4,6 +4,8 @@
 #include "oneshot_native/DragDropService.h"
 #include "oneshot_native/MarkupEditorSettingsStore.h"
 #include "oneshot_native/MarkupEditorWindow.h"
+#include "oneshot_native/NotificationPlacement.h"
+#include "oneshot_native/NotificationSettingsStore.h"
 #include "oneshot_native/PathService.h"
 
 namespace oneshot
@@ -31,6 +33,7 @@ namespace oneshot
         std::wstring lastDragResult;
         HRESULT lastDragHresult{S_OK};
         DWORD lastDragEffect{DROPEFFECT_NONE};
+        NotificationPlacement placement{};
     };
 
     class NotificationManager
@@ -47,6 +50,8 @@ namespace oneshot
         void StartDrag(NotificationWindow* notification, HWND sourceWindow);
         void CopyToClipboard(NotificationWindow* notification);
         void OpenMarkup(NotificationWindow* notification);
+        void SetPlacement(NotificationPlacement placement);
+        [[nodiscard]] const NotificationPlacement& GetPlacement() const noexcept { return _placement; }
         [[nodiscard]] const NotificationDebugState& GetDebugState() const noexcept { return _debugState; }
 
     private:
@@ -55,9 +60,11 @@ namespace oneshot
         AppPaths _paths;
         DragDropService _dragDrop;
         MarkupEditorSettingsStore _markupEditorSettings;
+        NotificationSettingsStore _settingsStore;
         MarkupEditorWindow _markupEditor;
         OutputService& _outputService;
         std::vector<std::unique_ptr<NotificationWindow>> _notifications;
+        NotificationPlacement _placement;
         NotificationDebugState _debugState;
     };
 }

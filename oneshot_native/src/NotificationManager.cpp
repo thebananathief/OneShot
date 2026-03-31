@@ -114,6 +114,54 @@ namespace
         return workArea;
     }
 
+    POINT ComputeNotificationPosition(const RECT& workArea, const oneshot::NotificationPlacement& placement, int width, int height, int stackOffset)
+    {
+        POINT origin{};
+        switch (placement.anchor)
+        {
+        case oneshot::NotificationAnchor::TopLeft:
+            origin.x = workArea.left + kNotificationMargin;
+            origin.y = workArea.top + kNotificationMargin;
+            break;
+        case oneshot::NotificationAnchor::BottomLeft:
+            origin.x = workArea.left + kNotificationMargin;
+            origin.y = workArea.bottom - kNotificationMargin - height;
+            break;
+        case oneshot::NotificationAnchor::TopRight:
+            origin.x = workArea.right - kNotificationMargin - width;
+            origin.y = workArea.top + kNotificationMargin;
+            break;
+        case oneshot::NotificationAnchor::BottomRight:
+            origin.x = workArea.right - kNotificationMargin - width;
+            origin.y = workArea.bottom - kNotificationMargin - height;
+            break;
+        default:
+            origin.x = workArea.right - kNotificationMargin - width;
+            origin.y = workArea.top + kNotificationMargin;
+            break;
+        }
+
+        switch (placement.growDirection)
+        {
+        case oneshot::NotificationGrowDirection::Left:
+            origin.x -= stackOffset;
+            break;
+        case oneshot::NotificationGrowDirection::Right:
+            origin.x += stackOffset;
+            break;
+        case oneshot::NotificationGrowDirection::Up:
+            origin.y -= stackOffset;
+            break;
+        case oneshot::NotificationGrowDirection::Down:
+            origin.y += stackOffset;
+            break;
+        default:
+            break;
+        }
+
+        return origin;
+    }
+
     COLORREF ComputePulseColor(COLORREF base, COLORREF pulse, int pulseFrame)
     {
         if (pulseFrame <= 0 || pulseFrame >= kPulseFrameCount)
@@ -803,8 +851,10 @@ namespace oneshot
     NotificationManager::NotificationManager(AppPaths paths, OutputService& outputService)
         : _paths(std::move(paths))
         , _markupEditorSettings(_paths)
+        , _settingsStore(_paths)
         , _markupEditor(outputService, _markupEditorSettings)
         , _outputService(outputService)
+        , _placement(_settingsStore.GetPlacement())
     {
         INITCOMMONCONTROLSEX controls{};
         controls.dwSize = sizeof(controls);
@@ -824,6 +874,8 @@ namespace oneshot
         thumbnailClass.lpszClassName = L"OneShotNative.NotificationThumbnail";
         thumbnailClass.hCursor = LoadCursorW(nullptr, IDC_HAND);
         RegisterClassW(&thumbnailClass);
+
+        _debugState.placement = _placement;
     }
 
     NotificationManager::~NotificationManager()
@@ -838,6 +890,7 @@ namespace oneshot
         _debugState = NotificationDebugState{};
         _debugState.lastAttemptUtc = CurrentIso8601Utc();
         _debugState.showAttempted = true;
+        _debugState.placement = _placement;
 
         const auto recordFailure = [this](const wchar_t* step, DWORD error)
         {
@@ -1108,11 +1161,26 @@ namespace oneshot
         InvalidateRect(notification->hwnd, nullptr, FALSE);
     }
 
+    void NotificationManager::SetPlacement(NotificationPlacement placement)
+    {
+        const NotificationPlacement normalized = NormalizeNotificationPlacement(placement);
+        if (_placement.anchor == normalized.anchor && _placement.growDirection == normalized.growDirection)
+        {
+            return;
+        }
+
+        _placement = normalized;
+        _settingsStore.SavePlacement(_placement);
+        _debugState.placement = _placement;
+        RepositionAll();
+    }
+
     void NotificationManager::RepositionAll()
     {
         const RECT workArea = GetPrimaryWorkArea();
-        int top = workArea.top + kNotificationMargin;
+        _debugState.placement = _placement;
         HWND insertAfter = HWND_TOPMOST;
+        int stackOffset = 0;
 
         for (auto& notification : _notifications)
         {
@@ -1123,8 +1191,9 @@ namespace oneshot
 
             const int width = notification->layout.windowWidth;
             const int height = notification->layout.windowHeight;
-            const int left = workArea.right - kNotificationMargin - width;
-            if (!SetWindowPos(notification->hwnd, insertAfter, left, top, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW))
+            const POINT origin = ComputeNotificationPosition(workArea, _placement, width, height, stackOffset);
+
+            if (!SetWindowPos(notification->hwnd, insertAfter, origin.x, origin.y, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW))
             {
                 const DWORD error = GetLastError();
                 _debugState.lastFailedStep = L"SetWindowPos(notification)";
@@ -1136,7 +1205,10 @@ namespace oneshot
             {
                 insertAfter = notification->hwnd;
             }
-            top += height + kNotificationGap;
+
+            stackOffset += ((_placement.growDirection == NotificationGrowDirection::Left || _placement.growDirection == NotificationGrowDirection::Right)
+                ? width
+                : height) + kNotificationGap;
         }
     }
 

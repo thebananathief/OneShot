@@ -18,6 +18,8 @@ add_executable(oneshot WIN32
     src/MarkupEditorSettingsStore.cpp
     src/MarkupEditorWindow.cpp
     src/NotificationManager.cpp
+    src/NotificationPlacement.cpp
+    src/NotificationSettingsStore.cpp
     src/OverlayManager.cpp
     src/OutputService.cpp
     src/PathService.cpp

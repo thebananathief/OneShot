@@ -69,6 +69,8 @@ namespace oneshot
                 << L"    show_window_result: " << notificationDebug.showWindowResult << L",\n"
                 << L"    window_visible: " << BoolText(notificationDebug.windowVisible) << L",\n"
                 << L"    window_rect: " << RectText(notificationDebug.windowRect) << L",\n"
+                << L"    anchor: \"" << NotificationAnchorToString(notificationDebug.placement.anchor) << L"\",\n"
+                << L"    grow_direction: \"" << NotificationGrowDirectionToString(notificationDebug.placement.growDirection) << L"\",\n"
                 << L"    last_drag_attempted: " << BoolText(notificationDebug.lastDragAttempted) << L",\n"
                 << L"    last_drag_notification_hwnd: \"" << HwndText(notificationDebug.lastDragNotificationHwnd) << L"\",\n"
                 << L"    last_drag_source_hwnd: \"" << HwndText(notificationDebug.lastDragSourceHwnd) << L"\",\n"

@@ -31,6 +31,14 @@ namespace oneshot
     inline constexpr UINT_PTR kTrayMenuSnapshot = 40001;
     inline constexpr UINT_PTR kTrayMenuDiagnostics = 40002;
     inline constexpr UINT_PTR kTrayMenuExit = 40003;
+    inline constexpr UINT_PTR kTrayMenuNotificationAnchorTopLeft = 40004;
+    inline constexpr UINT_PTR kTrayMenuNotificationAnchorBottomLeft = 40005;
+    inline constexpr UINT_PTR kTrayMenuNotificationAnchorTopRight = 40006;
+    inline constexpr UINT_PTR kTrayMenuNotificationAnchorBottomRight = 40007;
+    inline constexpr UINT_PTR kTrayMenuNotificationGrowLeft = 40008;
+    inline constexpr UINT_PTR kTrayMenuNotificationGrowRight = 40009;
+    inline constexpr UINT_PTR kTrayMenuNotificationGrowUp = 40010;
+    inline constexpr UINT_PTR kTrayMenuNotificationGrowDown = 40011;
 
     inline constexpr wchar_t kCommandSnapshot[] = L"snapshot";
     inline constexpr wchar_t kCommandInstallStartup[] = L"install-startup";
