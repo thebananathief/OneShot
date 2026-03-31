@@ -378,6 +378,23 @@ namespace oneshot
         InvalidateRect(notification->hwnd, nullptr, TRUE);
     }
 
+    static void BringNotificationToTopmostFront(NotificationManager::NotificationWindow* notification)
+    {
+        if (!notification || !notification->hwnd || !IsWindow(notification->hwnd))
+        {
+            return;
+        }
+
+        SetWindowPos(
+            notification->hwnd,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    }
+
     static void DrawNotificationButton(const NotificationManager::NotificationWindow& notification, const DRAWITEMSTRUCT& draw)
     {
         const auto& palette = ui::GetPalette();
@@ -901,7 +918,7 @@ namespace oneshot
 
     void NotificationManager::StartDrag(NotificationWindow* notification)
     {
-        if (!notification)
+        if (!notification || !notification->hwnd || !IsWindow(notification->hwnd))
         {
             return;
         }
@@ -911,8 +928,11 @@ namespace oneshot
             return;
         }
 
+        BringNotificationToTopmostFront(notification);
+
         std::wstring error;
         const bool started = _dragDrop.StartFileDrag(notification->hwnd, notification->dragPath, error);
+        RepositionAll();
         if (!started && !error.empty())
         {
             MessageBoxW(notification->hwnd, error.c_str(), kAppName, MB_OK | MB_ICONWARNING);
