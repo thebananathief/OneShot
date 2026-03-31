@@ -392,7 +392,10 @@ namespace oneshot
             0,
             0,
             0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+        BringWindowToTop(notification->hwnd);
+        SetActiveWindow(notification->hwnd);
+        SetForegroundWindow(notification->hwnd);
     }
 
     static void DrawNotificationButton(const NotificationManager::NotificationWindow& notification, const DRAWITEMSTRUCT& draw)
@@ -537,6 +540,7 @@ namespace oneshot
             ResetThumbnailDragState(notification);
             return 0;
         case WM_LBUTTONDOWN:
+            BringNotificationToTopmostFront(notification);
             notification->pointerDown = true;
             notification->dragInProgress = false;
             notification->dragAnchor = POINT{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
