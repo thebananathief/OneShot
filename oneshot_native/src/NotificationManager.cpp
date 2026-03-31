@@ -943,8 +943,6 @@ namespace oneshot
             return;
         }
 
-        BringNotificationToTopmostFront(notification);
-
         std::wstring error;
         const bool started = _dragDrop.StartFileDrag(sourceWindow, notification->dragPath, error);
         RepositionAll();

@@ -475,21 +475,6 @@ namespace oneshot
             return false;
         }
 
-        HWND foregroundWindow = nullptr;
-        if (originWindow && IsWindow(originWindow))
-        {
-            foregroundWindow = GetAncestor(originWindow, GA_ROOT);
-            if (!foregroundWindow || !IsWindow(foregroundWindow))
-            {
-                foregroundWindow = originWindow;
-            }
-        }
-
-        if (foregroundWindow)
-        {
-            SetForegroundWindow(foregroundWindow);
-        }
-
         auto* dataObject = new FileDataObject(filePath);
         auto* dropSource = new DropSource();
         DWORD effect = DROPEFFECT_NONE;
