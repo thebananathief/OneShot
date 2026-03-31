@@ -312,14 +312,15 @@ namespace oneshot
         addTool(notification->markupButton, kMarkupButtonLabel);
     }
 
-    static void ReleaseThumbnailPointerCapture(NotificationManager::NotificationWindow* notification)
+    static void ReleaseNotificationPointerCapture(NotificationManager::NotificationWindow* notification)
     {
         if (!notification)
         {
             return;
         }
 
-        if (GetCapture() == notification->thumbnail)
+        const HWND captureWindow = GetCapture();
+        if (captureWindow == notification->thumbnail || captureWindow == notification->hwnd)
         {
             ReleaseCapture();
         }
@@ -334,7 +335,7 @@ namespace oneshot
 
         notification->pointerDown = false;
         notification->dragInProgress = false;
-        ReleaseThumbnailPointerCapture(notification);
+        ReleaseNotificationPointerCapture(notification);
     }
 
     static void ConfigureButton(HWND button, HFONT font)
@@ -386,26 +387,6 @@ namespace oneshot
         ApplyNotificationRegions(notification);
         InvalidateRect(notification->thumbnail, nullptr, TRUE);
         InvalidateRect(notification->hwnd, nullptr, TRUE);
-    }
-
-    static void BringNotificationToTopmostFront(NotificationManager::NotificationWindow* notification)
-    {
-        if (!notification || !notification->hwnd || !IsWindow(notification->hwnd))
-        {
-            return;
-        }
-
-        SetWindowPos(
-            notification->hwnd,
-            HWND_TOPMOST,
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
-        BringWindowToTop(notification->hwnd);
-        SetActiveWindow(notification->hwnd);
-        SetForegroundWindow(notification->hwnd);
     }
 
     static void DrawNotificationButton(const NotificationManager::NotificationWindow& notification, const DRAWITEMSTRUCT& draw)
@@ -536,22 +517,22 @@ namespace oneshot
         case WM_SETCURSOR:
             SetCursor(LoadCursorW(nullptr, IDC_HAND));
             return TRUE;
-        case WM_CAPTURECHANGED:
-            ResetThumbnailDragState(notification);
-            return 0;
         case WM_LBUTTONDOWN:
         {
-            POINT dragStart{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-            ClientToScreen(hwnd, &dragStart);
-            if (DragDetect(hwnd, dragStart))
-            {
-                notification->manager->StartDrag(notification, hwnd);
-            }
+            POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            ClientToScreen(hwnd, &point);
+            ScreenToClient(notification->hwnd, &point);
+            SendMessageW(notification->hwnd, WM_LBUTTONDOWN, wParam, MAKELPARAM(point.x, point.y));
             return 0;
         }
         case WM_LBUTTONUP:
-            ResetThumbnailDragState(notification);
+        {
+            POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            ClientToScreen(hwnd, &point);
+            ScreenToClient(notification->hwnd, &point);
+            SendMessageW(notification->hwnd, WM_LBUTTONUP, wParam, MAKELPARAM(point.x, point.y));
             return 0;
+        }
         case WM_PAINT:
         {
             const auto& palette = ui::GetPalette();
@@ -651,6 +632,48 @@ namespace oneshot
         }
         case WM_SIZE:
             ApplyNotificationRegions(notification);
+            return 0;
+        case WM_CAPTURECHANGED:
+            ResetThumbnailDragState(notification);
+            return 0;
+        case WM_LBUTTONDOWN:
+        {
+            POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            RECT thumbnailRect{};
+            if (!GetWindowRect(notification->thumbnail, &thumbnailRect))
+            {
+                break;
+            }
+
+            MapWindowPoints(HWND_DESKTOP, hwnd, reinterpret_cast<LPPOINT>(&thumbnailRect), 2);
+            if (!PtInRect(&thumbnailRect, point))
+            {
+                break;
+            }
+
+            notification->pointerDown = true;
+            notification->dragInProgress = false;
+            notification->dragAnchor = point;
+            SetCapture(hwnd);
+            return 0;
+        }
+        case WM_MOUSEMOVE:
+            if (notification->pointerDown && !notification->dragInProgress && (wParam & MK_LBUTTON))
+            {
+                const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+                if (abs(point.x - notification->dragAnchor.x) >= kDragThreshold || abs(point.y - notification->dragAnchor.y) >= kDragThreshold)
+                {
+                    notification->dragInProgress = true;
+                    notification->pointerDown = false;
+                    ReleaseNotificationPointerCapture(notification);
+                    notification->manager->StartDrag(notification, notification->hwnd);
+                    ResetThumbnailDragState(notification);
+                }
+                return 0;
+            }
+            break;
+        case WM_LBUTTONUP:
+            ResetThumbnailDragState(notification);
             return 0;
         case WM_COMMAND:
             switch (LOWORD(wParam))
@@ -925,18 +948,40 @@ namespace oneshot
 
     void NotificationManager::StartDrag(NotificationWindow* notification, HWND sourceWindow)
     {
+        _debugState.lastDragAttempted = true;
+        _debugState.lastDragNotificationHwnd = notification ? reinterpret_cast<UINT_PTR>(notification->hwnd) : 0;
+        _debugState.lastDragSourceHwnd = reinterpret_cast<UINT_PTR>(sourceWindow);
+        _debugState.lastDragPath = notification ? notification->dragPath.wstring() : L"";
+        _debugState.lastDragPathExists = false;
+        _debugState.lastDragResult.clear();
+        _debugState.lastDragHresult = S_OK;
+        _debugState.lastDragEffect = DROPEFFECT_NONE;
+
         if (!notification || !notification->hwnd || !IsWindow(notification->hwnd))
         {
+            _debugState.lastDragResult = L"invalid_notification_window";
             return;
         }
 
-        if (notification->dragPath.empty() || !std::filesystem::exists(notification->dragPath))
+        if (notification->dragPath.empty())
         {
+            _debugState.lastDragResult = L"drag_path_empty";
+            return;
+        }
+
+        _debugState.lastDragPathExists = std::filesystem::exists(notification->dragPath);
+        if (!_debugState.lastDragPathExists)
+        {
+            _debugState.lastDragResult = L"drag_path_missing";
             return;
         }
 
         std::wstring error;
-        const bool started = _dragDrop.StartFileDrag(sourceWindow, notification->dragPath, error);
+        DragDropDebugInfo dragDebug{};
+        const bool started = _dragDrop.StartFileDrag(sourceWindow, notification->dragPath, error, &dragDebug);
+        _debugState.lastDragResult = dragDebug.result;
+        _debugState.lastDragHresult = dragDebug.hresult;
+        _debugState.lastDragEffect = dragDebug.effect;
         RepositionAll();
         if (!started && !error.empty())
         {

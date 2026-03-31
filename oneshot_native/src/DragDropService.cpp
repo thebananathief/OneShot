@@ -458,13 +458,23 @@ namespace
 
 namespace oneshot
 {
-    bool DragDropService::StartFileDrag(HWND originWindow, const std::filesystem::path& filePath, std::wstring& error) const
+    bool DragDropService::StartFileDrag(HWND originWindow, const std::filesystem::path& filePath, std::wstring& error, DragDropDebugInfo* debugInfo) const
     {
+        (void)originWindow;
         error.clear();
+        if (debugInfo)
+        {
+            *debugInfo = DragDropDebugInfo{};
+            debugInfo->result = L"not_started";
+        }
 
         if (!std::filesystem::exists(filePath))
         {
             error = L"Drag image is missing: " + filePath.wstring();
+            if (debugInfo)
+            {
+                debugInfo->result = L"missing_file";
+            }
             return false;
         }
 
@@ -472,6 +482,11 @@ namespace oneshot
         if (oleHr != S_OK && oleHr != S_FALSE)
         {
             error = DescribeOleInitFailure(oleHr);
+            if (debugInfo)
+            {
+                debugInfo->hresult = oleHr;
+                debugInfo->result = L"ole_init_failed";
+            }
             return false;
         }
 
@@ -479,11 +494,20 @@ namespace oneshot
         auto* dropSource = new DropSource();
         DWORD effect = DROPEFFECT_NONE;
         const HRESULT hr = DoDragDrop(dataObject, dropSource, DROPEFFECT_COPY, &effect);
+        if (debugInfo)
+        {
+            debugInfo->hresult = hr;
+            debugInfo->effect = effect;
+        }
         dataObject->Release();
         dropSource->Release();
 
         if (hr == DRAGDROP_S_DROP && (effect & DROPEFFECT_COPY) != 0)
         {
+            if (debugInfo)
+            {
+                debugInfo->result = L"dropped_copy";
+            }
             RestoreFocusAtDropPoint();
             OleUninitialize();
             return true;
@@ -491,6 +515,10 @@ namespace oneshot
 
         if (hr == DRAGDROP_S_CANCEL)
         {
+            if (debugInfo)
+            {
+                debugInfo->result = L"cancelled";
+            }
             OleUninitialize();
             return false;
         }
@@ -498,6 +526,10 @@ namespace oneshot
         if (FAILED(hr))
         {
             error = DescribeDragDropFailure(hr);
+            if (debugInfo)
+            {
+                debugInfo->result = L"dragdrop_failed";
+            }
             OleUninitialize();
             return false;
         }
@@ -505,10 +537,18 @@ namespace oneshot
         if (effect == DROPEFFECT_NONE)
         {
             error = L"Drop target did not accept the image file.";
+            if (debugInfo)
+            {
+                debugInfo->result = L"drop_rejected";
+            }
         }
         else
         {
             error = L"Drop completed without a copy effect.";
+            if (debugInfo)
+            {
+                debugInfo->result = L"drop_without_copy";
+            }
         }
 
         OleUninitialize();

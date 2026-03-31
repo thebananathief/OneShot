@@ -7,6 +7,20 @@ namespace
         return value ? L"true" : L"false";
     }
 
+    std::wstring HwndText(UINT_PTR value)
+    {
+        std::wstringstream builder;
+        builder << L"0x" << std::hex << std::uppercase << value;
+        return builder.str();
+    }
+
+    std::wstring HrText(HRESULT value)
+    {
+        std::wstringstream builder;
+        builder << L"0x" << std::hex << std::uppercase << static_cast<unsigned long>(value);
+        return builder.str();
+    }
+
     std::wstring RectText(const RECT& rect)
     {
         std::wstringstream builder;
@@ -53,7 +67,15 @@ namespace oneshot
                 << L"    markup_button_created: " << BoolText(notificationDebug.markupButtonCreated) << L",\n"
                 << L"    show_window_result: " << notificationDebug.showWindowResult << L",\n"
                 << L"    window_visible: " << BoolText(notificationDebug.windowVisible) << L",\n"
-                << L"    window_rect: " << RectText(notificationDebug.windowRect) << L"\n"
+                << L"    window_rect: " << RectText(notificationDebug.windowRect) << L",\n"
+                << L"    last_drag_attempted: " << BoolText(notificationDebug.lastDragAttempted) << L",\n"
+                << L"    last_drag_notification_hwnd: \"" << HwndText(notificationDebug.lastDragNotificationHwnd) << L"\",\n"
+                << L"    last_drag_source_hwnd: \"" << HwndText(notificationDebug.lastDragSourceHwnd) << L"\",\n"
+                << L"    last_drag_path: \"" << notificationDebug.lastDragPath << L"\",\n"
+                << L"    last_drag_path_exists: " << BoolText(notificationDebug.lastDragPathExists) << L",\n"
+                << L"    last_drag_result: \"" << notificationDebug.lastDragResult << L"\",\n"
+                << L"    last_drag_hresult: \"" << HrText(notificationDebug.lastDragHresult) << L"\",\n"
+                << L"    last_drag_effect: " << notificationDebug.lastDragEffect << L"\n"
                 << L"  }\n"
                 << L"}\n";
         return builder.str();

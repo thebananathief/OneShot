@@ -22,6 +22,14 @@ namespace oneshot
         int showWindowResult{0};
         bool windowVisible{false};
         RECT windowRect{};
+        bool lastDragAttempted{false};
+        UINT_PTR lastDragNotificationHwnd{0};
+        UINT_PTR lastDragSourceHwnd{0};
+        std::wstring lastDragPath;
+        bool lastDragPathExists{false};
+        std::wstring lastDragResult;
+        HRESULT lastDragHresult{S_OK};
+        DWORD lastDragEffect{DROPEFFECT_NONE};
     };
 
     class NotificationManager
