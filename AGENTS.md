@@ -9,8 +9,7 @@
 - `.tools/` contains local toolchain downloads and should not be treated as source.
 
 ## Build and Development Commands
-- `cmake -S .\oneshot_native -B .\artifacts\native-build -G "Visual Studio 17 2022" -A x64` configures the native build.
-- `cmake --build .\artifacts\native-build --config Release` builds the native executable.
+- `powershell .\installer\build-native.ps1` configures and builds the native executable with auto-detected CMake and Visual Studio generator selection.
 - `powershell .\installer\build-msi.ps1` builds the native app, publishes `artifacts\publish\OneShot.exe`, and produces `artifacts\OneShot.msi`.
 - `.\artifacts\native-build\Release\oneshot.exe` runs the native tray daemon locally after a successful build.
 - `.\artifacts\native-build\Release\oneshot.exe snapshot` runs and triggers capture flow against the native app.

@@ -14,9 +14,10 @@ OneShot is a Windows screenshot tray app built as a native C++20 Win32 desktop a
 ## Build
 
 ```powershell
-cmake -S .\oneshot_native -B .\artifacts\native-build -G "Visual Studio 17 2022" -A x64
-cmake --build .\artifacts\native-build --config Release
+powershell .\installer\build-native.ps1
 ```
+
+`build-native.ps1` auto-detects a compatible Visual Studio CMake install and generator, so it works whether `cmake.exe` is on `PATH` or bundled inside Visual Studio.
 
 ## Build The MSI
 

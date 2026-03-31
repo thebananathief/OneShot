@@ -6,6 +6,8 @@ $publishDir = Join-Path $root "artifacts\publish"
 $msiOut = Join-Path $root "artifacts\OneShot.msi"
 $versionFile = Join-Path $PSScriptRoot ".msi-build-counter"
 
+. (Join-Path $PSScriptRoot "BuildSupport.ps1")
+
 function Get-InstalledOneShotPatchVersion {
     $uninstallRoots = @(
         "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall",
@@ -38,7 +40,6 @@ function Get-InstalledOneShotPatchVersion {
 }
 
 New-Item -ItemType Directory -Force $publishDir | Out-Null
-New-Item -ItemType Directory -Force $buildDir | Out-Null
 
 if (Test-Path $versionFile) {
     $currentCounterText = (Get-Content $versionFile -Raw).Trim()
@@ -60,10 +61,7 @@ if ($nextCounter -gt 65535) {
 Set-Content -Path $versionFile -Value $nextCounter -NoNewline
 $productVersion = "1.0.$nextCounter"
 
-cmake -S $sourceDir -B $buildDir -G "Visual Studio 17 2022" -A x64
-if ($LASTEXITCODE -ne 0) { throw "CMake configure failed." }
-cmake --build $buildDir --config Release
-if ($LASTEXITCODE -ne 0) { throw "Native build failed." }
+Invoke-OneShotNativeBuild -SourceDir $sourceDir -BuildDir $buildDir -Configuration "Release"
 
 Get-ChildItem -Path $publishDir -Force -ErrorAction SilentlyContinue | Remove-Item -Force -Recurse
 Copy-Item (Join-Path $buildDir "Release\oneshot.exe") (Join-Path $publishDir "OneShot.exe") -Force
