@@ -18,13 +18,16 @@ namespace
     constexpr int kThumbControlId = 100;
     constexpr int kMarkupButtonId = 101;
     constexpr int kDismissButtonId = 102;
+    constexpr int kCopyButtonId = 103;
     constexpr int kDragThreshold = 4;
     constexpr int kPulseFrameCount = 10;
     constexpr int kPulseTimerMs = 32;
     constexpr wchar_t kHoverProp[] = L"OneShot.NotificationHover";
     constexpr wchar_t kCloseButtonLabel[] = L"Close";
+    constexpr wchar_t kCopyButtonLabel[] = L"Copy to clipboard";
     constexpr wchar_t kMarkupButtonLabel[] = L"Markup";
     constexpr wchar_t kCloseGlyph[] = L"\uE711";
+    constexpr wchar_t kCopyGlyph[] = L"\uE8C8";
     constexpr wchar_t kMarkupGlyph[] = L"\uE70F";
 
     struct NotificationLayout
@@ -34,12 +37,12 @@ namespace
         int windowHeight{160};
         int borderThickness{1};
         int cardRadius{22};
-        int thumbnailRadius{18};
-        int buttonRadius{14};
+        int buttonRadius{10};
         int thumbnailInset{2};
         RECT cardRect{};
         RECT thumbnailRect{};
         RECT dismissButtonRect{};
+        RECT copyButtonRect{};
         RECT markupButtonRect{};
     };
 
@@ -78,17 +81,18 @@ namespace
         layout.windowHeight = ScaleValue(160, layout.dpi);
         layout.borderThickness = ScaleValue(1, layout.dpi);
         layout.cardRadius = ScaleValue(22, layout.dpi);
-        layout.thumbnailRadius = ScaleValue(18, layout.dpi);
-        layout.buttonRadius = ScaleValue(14, layout.dpi);
+        layout.buttonRadius = ScaleValue(10, layout.dpi);
         layout.thumbnailInset = std::max(1, ScaleValue(2, layout.dpi));
 
         layout.cardRect = MakeRect(0, 0, layout.windowWidth, layout.windowHeight);
 
         const int outerPadding = ScaleValue(12, layout.dpi);
         const int columnGap = ScaleValue(10, layout.dpi);
-        const int actionWidth = ScaleValue(56, layout.dpi);
-        const int dismissSize = ScaleValue(56, layout.dpi);
-        const int markupSize = ScaleValue(56, layout.dpi);
+        const int actionWidth = ScaleValue(40, layout.dpi);
+        const int buttonGap = ScaleValue(8, layout.dpi);
+        const int dismissSize = ScaleValue(40, layout.dpi);
+        const int copySize = ScaleValue(40, layout.dpi);
+        const int markupSize = ScaleValue(40, layout.dpi);
         const int contentHeight = (layout.cardRect.bottom - layout.cardRect.top) - (outerPadding * 2);
         const int contentWidth = (layout.cardRect.right - layout.cardRect.left) - (outerPadding * 2);
         const int thumbWidth = contentWidth - actionWidth - columnGap;
@@ -98,7 +102,8 @@ namespace
 
         layout.thumbnailRect = MakeRect(layout.cardRect.left + outerPadding, layout.cardRect.top + outerPadding, thumbWidth, thumbHeight);
         layout.dismissButtonRect = MakeRect(actionLeft, actionTop, dismissSize, dismissSize);
-        layout.markupButtonRect = MakeRect(actionLeft, layout.cardRect.bottom - outerPadding - markupSize, markupSize, markupSize);
+        layout.copyButtonRect = MakeRect(actionLeft, layout.dismissButtonRect.bottom + buttonGap, copySize, copySize);
+        layout.markupButtonRect = MakeRect(actionLeft, layout.copyButtonRect.bottom + buttonGap, markupSize, markupSize);
         return layout;
     }
 
@@ -220,6 +225,20 @@ namespace
         return result;
     }
 
+    void FillRectColor(HDC dc, const RECT& rect, COLORREF color)
+    {
+        HBRUSH brush = CreateSolidBrush(color);
+        FillRect(dc, &rect, brush);
+        DeleteObject(brush);
+    }
+
+    void FrameRectColor(HDC dc, const RECT& rect, COLORREF color)
+    {
+        HBRUSH brush = CreateSolidBrush(color);
+        FrameRect(dc, &rect, brush);
+        DeleteObject(brush);
+    }
+
     RECT ComputeAspectFitRect(const RECT& bounds, int sourceWidth, int sourceHeight)
     {
         const int boundsWidth = bounds.right - bounds.left;
@@ -247,6 +266,7 @@ namespace oneshot
         NotificationManager* manager{nullptr};
         HWND hwnd{nullptr};
         HWND thumbnail{nullptr};
+        HWND copyButton{nullptr};
         HWND markupButton{nullptr};
         HWND dismissButton{nullptr};
         HWND tooltip{nullptr};
@@ -278,15 +298,21 @@ namespace oneshot
         }
         if (notification->thumbnail)
         {
-            ui::ApplyRoundedWindowRegion(notification->thumbnail, notification->layout.thumbnailRadius);
+            SetWindowRgn(notification->thumbnail, nullptr, TRUE);
         }
-        if (notification->dismissButton)
+
+        const HWND buttons[] =
         {
-            ui::ApplyRoundedWindowRegion(notification->dismissButton, notification->layout.buttonRadius);
-        }
-        if (notification->markupButton)
+            notification->dismissButton,
+            notification->copyButton,
+            notification->markupButton
+        };
+        for (HWND button : buttons)
         {
-            ui::ApplyRoundedWindowRegion(notification->markupButton, notification->layout.buttonRadius);
+            if (button)
+            {
+                ui::ApplyRoundedWindowRegion(button, notification->layout.buttonRadius);
+            }
         }
     }
 
@@ -309,6 +335,7 @@ namespace oneshot
         };
 
         addTool(notification->dismissButton, kCloseButtonLabel);
+        addTool(notification->copyButton, kCopyButtonLabel);
         addTool(notification->markupButton, kMarkupButtonLabel);
     }
 
@@ -378,6 +405,13 @@ namespace oneshot
             layout.dismissButtonRect.bottom - layout.dismissButtonRect.top,
             TRUE);
         MoveWindow(
+            notification->copyButton,
+            layout.copyButtonRect.left,
+            layout.copyButtonRect.top,
+            layout.copyButtonRect.right - layout.copyButtonRect.left,
+            layout.copyButtonRect.bottom - layout.copyButtonRect.top,
+            TRUE);
+        MoveWindow(
             notification->markupButton,
             layout.markupButtonRect.left,
             layout.markupButtonRect.top,
@@ -396,6 +430,7 @@ namespace oneshot
         const bool pressed = (draw.itemState & ODS_SELECTED) != 0;
         const bool focused = (draw.itemState & ODS_FOCUS) != 0;
         const bool dismiss = draw.CtlID == kDismissButtonId;
+        const bool copy = draw.CtlID == kCopyButtonId;
         RECT clientRect{};
         GetClientRect(draw.hwndItem, &clientRect);
 
@@ -434,7 +469,15 @@ namespace oneshot
         SetBkMode(draw.hDC, TRANSPARENT);
         SetTextColor(draw.hDC, text);
         RECT textRect = clientRect;
-        const wchar_t* glyph = draw.CtlID == kDismissButtonId ? kCloseGlyph : kMarkupGlyph;
+        const wchar_t* glyph = kMarkupGlyph;
+        if (dismiss)
+        {
+            glyph = kCloseGlyph;
+        }
+        else if (copy)
+        {
+            glyph = kCopyGlyph;
+        }
         DrawTextW(draw.hDC, glyph, -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
         if (oldFont)
         {
@@ -542,8 +585,8 @@ namespace oneshot
             RECT client{};
             GetClientRect(hwnd, &client);
             const COLORREF borderColor = IsHovering(hwnd) ? palette.accentHot : palette.panelBorder;
-            ui::FillRoundedRect(dc, client, RGB(16, 22, 30), notification->layout.thumbnailRadius);
-            ui::FrameRoundedRect(dc, client, borderColor, notification->layout.thumbnailRadius);
+            FillRectColor(dc, client, RGB(16, 22, 30));
+            FrameRectColor(dc, client, borderColor);
 
             if (notification->image.bitmap)
             {
@@ -681,6 +724,9 @@ namespace oneshot
             case kMarkupButtonId:
                 notification->manager->OpenMarkup(notification);
                 return 0;
+            case kCopyButtonId:
+                notification->manager->CopyToClipboard(notification);
+                return 0;
             case kDismissButtonId:
                 notification->manager->CloseNotification(notification);
                 return 0;
@@ -703,13 +749,14 @@ namespace oneshot
             if (notification->uiFont)
             {
                 DeleteObject(notification->uiFont);
-                notification->uiFont = CreateSymbolFont(hwnd, 12);
+                notification->uiFont = CreateSymbolFont(hwnd, 11);
                 SendMessageW(notification->dismissButton, WM_SETFONT, reinterpret_cast<WPARAM>(notification->uiFont), TRUE);
+                SendMessageW(notification->copyButton, WM_SETFONT, reinterpret_cast<WPARAM>(notification->uiFont), TRUE);
             }
             if (notification->uiBoldFont)
             {
                 DeleteObject(notification->uiBoldFont);
-                notification->uiBoldFont = CreateSymbolFont(hwnd, 16);
+                notification->uiBoldFont = CreateSymbolFont(hwnd, 13);
                 SendMessageW(notification->markupButton, WM_SETFONT, reinterpret_cast<WPARAM>(notification->uiBoldFont), TRUE);
             }
             ApplyLayout(notification);
@@ -828,8 +875,8 @@ namespace oneshot
         }
         _debugState.windowCreated = true;
 
-        notification->uiFont = CreateSymbolFont(notification->hwnd, 12);
-        notification->uiBoldFont = CreateSymbolFont(notification->hwnd, 16);
+        notification->uiFont = CreateSymbolFont(notification->hwnd, 11);
+        notification->uiBoldFont = CreateSymbolFont(notification->hwnd, 13);
         notification->layout = BuildLayout(static_cast<int>(GetDpiForWindow(notification->hwnd)));
         notification->thumbnail = CreateWindowExW(
             0,
@@ -871,6 +918,26 @@ namespace oneshot
             return;
         }
         _debugState.dismissButtonCreated = true;
+        notification->copyButton = CreateWindowExW(
+            0,
+            WC_BUTTONW,
+            kCopyButtonLabel,
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+            0,
+            0,
+            0,
+            0,
+            notification->hwnd,
+            reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCopyButtonId)),
+            GetModuleHandleW(nullptr),
+            nullptr);
+        if (!notification->copyButton)
+        {
+            recordFailure(L"CreateWindowExW(copyButton)", GetLastError());
+            DestroyWindow(notification->hwnd);
+            return;
+        }
+        _debugState.copyButtonCreated = true;
         notification->markupButton = CreateWindowExW(
             0,
             WC_BUTTONW,
@@ -907,8 +974,10 @@ namespace oneshot
             nullptr);
 
         ConfigureButton(notification->dismissButton, notification->uiFont);
+        ConfigureButton(notification->copyButton, notification->uiFont);
         ConfigureButton(notification->markupButton, notification->uiBoldFont);
         SetWindowSubclass(notification->dismissButton, NotificationButtonProc, 0, 0);
+        SetWindowSubclass(notification->copyButton, NotificationButtonProc, 0, 0);
         SetWindowSubclass(notification->markupButton, NotificationButtonProc, 0, 0);
         ConfigureTooltips(notification.get());
 
@@ -1011,6 +1080,27 @@ namespace oneshot
 
         notification->image = std::move(*updatedImage);
         InvalidateRect(notification->thumbnail, nullptr, TRUE);
+        KillTimer(notification->hwnd, kPulseTimerId);
+        notification->pulseFrame = 0;
+        notification->backgroundColor = notification->baseBackgroundColor;
+        SetTimer(notification->hwnd, kPulseTimerId, kPulseTimerMs, nullptr);
+        InvalidateRect(notification->hwnd, nullptr, FALSE);
+    }
+
+    void NotificationManager::CopyToClipboard(NotificationWindow* notification)
+    {
+        if (!notification)
+        {
+            return;
+        }
+
+        std::wstring error;
+        if (!_outputService.CopyToClipboard(notification->hwnd, notification->image, error))
+        {
+            MessageBoxW(notification->hwnd, error.c_str(), kAppName, MB_OK | MB_ICONWARNING);
+            return;
+        }
+
         KillTimer(notification->hwnd, kPulseTimerId);
         notification->pulseFrame = 0;
         notification->backgroundColor = notification->baseBackgroundColor;

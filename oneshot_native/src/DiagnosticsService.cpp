@@ -64,6 +64,7 @@ namespace oneshot
                 << L"    window_created: " << BoolText(notificationDebug.windowCreated) << L",\n"
                 << L"    thumbnail_created: " << BoolText(notificationDebug.thumbnailCreated) << L",\n"
                 << L"    dismiss_button_created: " << BoolText(notificationDebug.dismissButtonCreated) << L",\n"
+                << L"    copy_button_created: " << BoolText(notificationDebug.copyButtonCreated) << L",\n"
                 << L"    markup_button_created: " << BoolText(notificationDebug.markupButtonCreated) << L",\n"
                 << L"    show_window_result: " << notificationDebug.showWindowResult << L",\n"
                 << L"    window_visible: " << BoolText(notificationDebug.windowVisible) << L",\n"

@@ -18,6 +18,7 @@ namespace oneshot
         bool windowCreated{false};
         bool thumbnailCreated{false};
         bool dismissButtonCreated{false};
+        bool copyButtonCreated{false};
         bool markupButtonCreated{false};
         int showWindowResult{0};
         bool windowVisible{false};
@@ -44,6 +45,7 @@ namespace oneshot
         void CloseAll();
         void CloseNotification(NotificationWindow* notification);
         void StartDrag(NotificationWindow* notification, HWND sourceWindow);
+        void CopyToClipboard(NotificationWindow* notification);
         void OpenMarkup(NotificationWindow* notification);
         [[nodiscard]] const NotificationDebugState& GetDebugState() const noexcept { return _debugState; }
 
