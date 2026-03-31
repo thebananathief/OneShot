@@ -528,18 +528,6 @@ namespace oneshot
         {
         case WM_MOUSEMOVE:
             TrackHover(hwnd);
-            if (notification->pointerDown && !notification->dragInProgress && (wParam & MK_LBUTTON))
-            {
-                const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-                if (abs(point.x - notification->dragAnchor.x) >= kDragThreshold || abs(point.y - notification->dragAnchor.y) >= kDragThreshold)
-                {
-                    notification->dragInProgress = true;
-                    notification->pointerDown = false;
-                    ReleaseThumbnailPointerCapture(notification);
-                    notification->manager->StartDrag(notification, hwnd);
-                    ResetThumbnailDragState(notification);
-                }
-            }
             return 0;
         case WM_MOUSELEAVE:
             SetHover(hwnd, false);
@@ -552,11 +540,15 @@ namespace oneshot
             ResetThumbnailDragState(notification);
             return 0;
         case WM_LBUTTONDOWN:
-            notification->pointerDown = true;
-            notification->dragInProgress = false;
-            notification->dragAnchor = POINT{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-            SetCapture(hwnd);
+        {
+            POINT dragStart{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            ClientToScreen(hwnd, &dragStart);
+            if (DragDetect(hwnd, dragStart))
+            {
+                notification->manager->StartDrag(notification, hwnd);
+            }
             return 0;
+        }
         case WM_LBUTTONUP:
             ResetThumbnailDragState(notification);
             return 0;
