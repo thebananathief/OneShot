@@ -1,0 +1,8 @@
+
+allow_login_shell = false
+
+# Other options: read-only | workspace-write | danger-full-access 
+sandbox_mode = "danger-full-access"
+
+# Options: untrusted | on-request | never | { reject = { sandbox_approval = bool, rules = bool, mcp_elicitations = bool } }
+approval_policy = "never"
