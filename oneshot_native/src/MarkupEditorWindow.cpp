@@ -72,6 +72,10 @@ namespace
     constexpr COLORREF kAccentColor = RGB(82, 146, 230);
     constexpr COLORREF kAccentHotColor = RGB(103, 165, 247);
     constexpr COLORREF kAccentPressedColor = RGB(60, 120, 200);
+    constexpr COLORREF kToggleActiveSurface = RGB(120, 184, 255);
+    constexpr COLORREF kToggleActiveSurfaceHot = RGB(140, 197, 255);
+    constexpr COLORREF kToggleActiveSurfacePressed = RGB(96, 164, 242);
+    constexpr COLORREF kToggleActiveBorder = RGB(228, 240, 255);
     constexpr COLORREF kControlSurface = RGB(56, 68, 88);
     constexpr COLORREF kControlSurfaceHot = RGB(67, 80, 101);
     constexpr COLORREF kControlSurfacePressed = RGB(75, 90, 114);
@@ -1348,6 +1352,33 @@ namespace oneshot
         }
 
         return cursor;
+    }
+
+    static HCURSOR GetCutMoveCursor(CutMoveMode mode)
+    {
+        if (mode == CutMoveMode::Move)
+        {
+            static HCURSOR moveCursor = LoadCursorW(nullptr, IDC_HAND);
+            return moveCursor ? moveCursor : LoadCursorW(nullptr, IDC_SIZEALL);
+        }
+
+        static HCURSOR cutCursor = LoadCursorW(nullptr, IDC_CROSS);
+        return cutCursor ? cutCursor : GetMarkupDrawingCursor();
+    }
+
+    static HCURSOR GetCanvasCursor(const MarkupEditorWindow::State& state)
+    {
+        if (state.middlePanning)
+        {
+            return LoadCursorW(nullptr, IDC_SIZEALL);
+        }
+
+        if (state.tool == MarkupEditorWindow::Tool::CutMove)
+        {
+            return GetCutMoveCursor(state.cutMoveMode);
+        }
+
+        return GetMarkupDrawingCursor();
     }
 
     static double ComputeFitZoom(HWND canvas, const CapturedImage& image)
@@ -2885,10 +2916,12 @@ namespace oneshot
         const bool disabled = (draw.itemState & ODS_DISABLED) != 0;
         const bool focused = (draw.itemState & ODS_FOCUS) != 0;
         const bool checked = SendMessageW(draw.hwndItem, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        const bool isCutMoveToggle = draw.CtlID == kCutModeId || draw.CtlID == kMoveModeId;
 
         COLORREF background = kControlSurface;
         COLORREF border = kControlBorder;
         COLORREF text = kTextColor;
+        int borderThickness = 1;
 
         if (draw.CtlID == kDoneId || draw.CtlID == kPromptOkId)
         {
@@ -2902,8 +2935,17 @@ namespace oneshot
         }
         else if (checked)
         {
-            background = kAccentColor;
-            border = kAccentHotColor;
+            if (isCutMoveToggle)
+            {
+                background = kToggleActiveSurface;
+                border = kToggleActiveBorder;
+                borderThickness = 2;
+            }
+            else
+            {
+                background = kAccentColor;
+                border = kAccentHotColor;
+            }
         }
 
         if (hover)
@@ -2911,6 +2953,10 @@ namespace oneshot
             if (draw.CtlID == kCancelId)
             {
                 background = kDangerSurfaceHot;
+            }
+            else if (isCutMoveToggle && checked)
+            {
+                background = kToggleActiveSurfaceHot;
             }
             else if (checked || draw.CtlID == kDoneId || draw.CtlID == kPromptOkId)
             {
@@ -2927,6 +2973,10 @@ namespace oneshot
             if (draw.CtlID == kCancelId)
             {
                 background = kDangerSurfacePressed;
+            }
+            else if (isCutMoveToggle && checked)
+            {
+                background = kToggleActiveSurfacePressed;
             }
             else if (checked || draw.CtlID == kDoneId || draw.CtlID == kPromptOkId)
             {
@@ -2952,7 +3002,7 @@ namespace oneshot
         const bool drawBorder = !IsActionButton(draw.CtlID);
         if (drawBorder)
         {
-            FrameRoundedRect(draw.hDC, paintRect, border, 12);
+            FrameRoundedRect(draw.hDC, paintRect, border, 12, borderThickness);
         }
 
         std::wstring label;
@@ -3582,8 +3632,32 @@ namespace oneshot
         SyncToolComboSelection(state);
         SyncToolOptionControls(state);
         LayoutToolbarControls(state);
+        if (state.canvas)
+        {
+            SetCursor(GetCanvasCursor(state));
+        }
         InvalidateRect(state.hwnd, nullptr, FALSE);
         InvalidateCanvas(state);
+    }
+
+    static void SetCutMoveMode(MarkupEditorWindow::State& state, CutMoveMode mode, bool persist)
+    {
+        if (state.cutMoveMode == mode)
+        {
+            if (state.canvas)
+            {
+                SetCursor(GetCanvasCursor(state));
+            }
+            return;
+        }
+
+        state.cutMoveMode = mode;
+        if (persist)
+        {
+            PersistEditorPreferences(state);
+        }
+
+        RefreshToolSelectionUi(state);
     }
 
     static void SetActiveTool(MarkupEditorWindow::State& state, MarkupEditorWindow::Tool tool)
@@ -3594,6 +3668,10 @@ namespace oneshot
         }
 
         state.tool = tool;
+        if (tool == MarkupEditorWindow::Tool::CutMove)
+        {
+            state.cutMoveMode = CutMoveMode::Cut;
+        }
         PersistEditorPreferences(state);
         RefreshToolSelectionUi(state);
     }
@@ -3778,6 +3856,10 @@ namespace oneshot
         state.ellipseSettings = preferences.ellipse;
         state.polygonSettings = preferences.polygon;
         state.textSettings = preferences.text;
+        if (state.tool == Tool::CutMove)
+        {
+            state.cutMoveMode = CutMoveMode::Cut;
+        }
         InitializeDocumentLayers(state, source);
 
         HWND window = CreateWindowExW(
@@ -4082,18 +4164,10 @@ namespace oneshot
                 }
                 return 0;
             case kCutModeId:
-                state->cutMoveMode = CutMoveMode::Cut;
-                PersistEditorPreferences(*state);
-                SyncToolOptionControls(*state);
-                InvalidateRect(hwnd, nullptr, FALSE);
-                InvalidateCanvas(*state);
+                SetCutMoveMode(*state, CutMoveMode::Cut, true);
                 return 0;
             case kMoveModeId:
-                state->cutMoveMode = CutMoveMode::Move;
-                PersistEditorPreferences(*state);
-                SyncToolOptionControls(*state);
-                InvalidateRect(hwnd, nullptr, FALSE);
-                InvalidateCanvas(*state);
+                SetCutMoveMode(*state, CutMoveMode::Move, true);
                 return 0;
             case kFitId:
                 state->userAdjustedViewport = false;
@@ -4227,6 +4301,13 @@ namespace oneshot
         {
         case WM_ERASEBKGND:
             return TRUE;
+        case WM_SETCURSOR:
+            if (LOWORD(lParam) == HTCLIENT)
+            {
+                SetCursor(GetCanvasCursor(*state));
+                return TRUE;
+            }
+            break;
         case WM_SIZE:
             EnsureCanvasBackBuffer(*state);
             InvalidateCanvas(*state);
@@ -4490,6 +4571,7 @@ namespace oneshot
                             {
                                 state->undoStack.push_back(std::move(before));
                                 ClearSnapshotStack(state->redoStack);
+                                SetCutMoveMode(*state, CutMoveMode::Move, true);
                             }
                         }
                     }
