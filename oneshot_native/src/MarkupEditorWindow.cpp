@@ -943,7 +943,7 @@ namespace oneshot
         BITMAPINFO info{};
         info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
         info.bmiHeader.biWidth = width;
-        info.bmiHeader.biHeight = -height;
+        info.bmiHeader.biHeight = height;
         info.bmiHeader.biPlanes = 1;
         info.bmiHeader.biBitCount = 32;
         info.bmiHeader.biCompression = BI_RGB;
