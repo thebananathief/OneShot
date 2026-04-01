@@ -15,6 +15,7 @@ namespace
     using StrokeToolSettings = oneshot::MarkupStrokePreferences;
     using ShapeToolSettings = oneshot::MarkupShapePreferences;
     using TextToolSettings = oneshot::MarkupTextPreferences;
+    using CutMoveMode = oneshot::MarkupCutMoveMode;
 
     constexpr int kToolbarGroupHeight = 64;
     constexpr int kMargin = 16;
@@ -39,6 +40,8 @@ namespace
     constexpr int kFontUpId = 2023;
     constexpr int kFitId = 2024;
     constexpr int kFontComboId = 2025;
+    constexpr int kCutModeId = 2026;
+    constexpr int kMoveModeId = 2027;
     constexpr int kAngleSnapIncrementDegrees = 15;
     constexpr int kPromptEditId = 3001;
     constexpr int kPromptOkId = 3002;
@@ -76,6 +79,9 @@ namespace
     constexpr COLORREF kDangerSurface = RGB(85, 53, 62);
     constexpr COLORREF kDangerSurfaceHot = RGB(101, 63, 74);
     constexpr COLORREF kDangerSurfacePressed = RGB(119, 74, 86);
+    constexpr COLORREF kSelectionBorderColor = RGB(255, 255, 255);
+    constexpr COLORREF kSelectionFillColor = RGB(82, 146, 230);
+    constexpr BYTE kSelectionFillAlpha = 51;
     constexpr wchar_t kUiHoverProp[] = L"OneShot.UiHover";
     constexpr wchar_t kActionGlyphFit[] = L"\uE9A6";
     constexpr wchar_t kActionGlyphUndo[] = L"\uE7A7";
@@ -120,6 +126,65 @@ namespace
         RECT toolbarRect{};
     };
 
+    struct RasterLayer
+    {
+        int id{0};
+        HBITMAP bitmap{nullptr};
+        RECT bounds{};
+        bool visible{true};
+
+        RasterLayer() = default;
+        RasterLayer(const RasterLayer&) = delete;
+        RasterLayer& operator=(const RasterLayer&) = delete;
+
+        RasterLayer(RasterLayer&& other) noexcept
+            : id(other.id)
+            , bitmap(std::exchange(other.bitmap, nullptr))
+            , bounds(other.bounds)
+            , visible(other.visible)
+        {
+        }
+
+        RasterLayer& operator=(RasterLayer&& other) noexcept
+        {
+            if (this == &other)
+            {
+                return *this;
+            }
+
+            Reset();
+            id = other.id;
+            bitmap = std::exchange(other.bitmap, nullptr);
+            bounds = other.bounds;
+            visible = other.visible;
+            return *this;
+        }
+
+        ~RasterLayer()
+        {
+            Reset();
+        }
+
+        void Reset() noexcept
+        {
+            if (bitmap)
+            {
+                DeleteObject(bitmap);
+                bitmap = nullptr;
+            }
+        }
+    };
+
+    struct EditorSnapshot
+    {
+        oneshot::CapturedImage image;
+        std::vector<RasterLayer> layers;
+        RECT documentBounds{};
+        bool documentActive{false};
+        int nextLayerId{1};
+        int selectedLayerId{0};
+    };
+
 
     RECT MakeRect(int left, int top, int right, int bottom)
     {
@@ -134,6 +199,76 @@ namespace
     RECT MakeSizedRect(int left, int top, int width, int height)
     {
         return MakeRect(left, top, left + width, top + height);
+    }
+
+    int RectWidth(const RECT& rect)
+    {
+        return static_cast<int>(std::max<LONG>(0, rect.right - rect.left));
+    }
+
+    int RectHeight(const RECT& rect)
+    {
+        return static_cast<int>(std::max<LONG>(0, rect.bottom - rect.top));
+    }
+
+    bool IsRectEmpty(const RECT& rect)
+    {
+        return rect.right <= rect.left || rect.bottom <= rect.top;
+    }
+
+    RECT NormalizeRect(RECT rect)
+    {
+        if (rect.left > rect.right)
+        {
+            std::swap(rect.left, rect.right);
+        }
+        if (rect.top > rect.bottom)
+        {
+            std::swap(rect.top, rect.bottom);
+        }
+        return rect;
+    }
+
+    RECT RectFromPoints(POINT start, POINT end)
+    {
+        return NormalizeRect(MakeRect(start.x, start.y, end.x, end.y));
+    }
+
+    RECT OffsetRectCopy(const RECT& rect, int dx, int dy)
+    {
+        RECT result = rect;
+        OffsetRect(&result, dx, dy);
+        return result;
+    }
+
+    RECT IntersectRectsCopy(const RECT& left, const RECT& right)
+    {
+        RECT intersection{};
+        if (!IntersectRect(&intersection, &left, &right))
+        {
+            return {};
+        }
+
+        return intersection;
+    }
+
+    bool UnionIntoRect(RECT& target, const RECT& rect)
+    {
+        if (IsRectEmpty(rect))
+        {
+            return !IsRectEmpty(target);
+        }
+
+        if (IsRectEmpty(target))
+        {
+            target = rect;
+            return true;
+        }
+
+        RECT combined{};
+        UnionRect(&combined, &target, &rect);
+        target = combined;
+        return true;
     }
 
     int ScaleForDpi(int value, UINT dpi)
@@ -270,13 +405,14 @@ namespace
     std::vector<ToolbarControlSpec> GetToolControlSpecs()
     {
         return {
-            { kToolComboId, 120, true }
+            { kToolComboId, 140, true }
         };
     }
 
     bool ToolUsesStrokeToolbarControls(oneshot::MarkupEditorWindow::Tool tool)
     {
-        return tool != oneshot::MarkupEditorWindow::Tool::Text;
+        return tool != oneshot::MarkupEditorWindow::Tool::Text
+            && tool != oneshot::MarkupEditorWindow::Tool::CutMove;
     }
 
     bool ToolUsesFillToolbarControls(oneshot::MarkupEditorWindow::Tool tool)
@@ -289,6 +425,11 @@ namespace
     bool ToolUsesTextToolbarControls(oneshot::MarkupEditorWindow::Tool tool)
     {
         return tool == oneshot::MarkupEditorWindow::Tool::Text;
+    }
+
+    bool ToolUsesCutMoveToolbarControls(oneshot::MarkupEditorWindow::Tool tool)
+    {
+        return tool == oneshot::MarkupEditorWindow::Tool::CutMove;
     }
 
     bool ShouldShowToolbarControl(oneshot::MarkupEditorWindow::Tool tool, int id)
@@ -307,6 +448,9 @@ namespace
         case kFontUpId:
         case kFontComboId:
             return ToolUsesTextToolbarControls(tool);
+        case kCutModeId:
+        case kMoveModeId:
+            return ToolUsesCutMoveToolbarControls(tool);
         default:
             return true;
         }
@@ -350,6 +494,14 @@ namespace
         if (ShouldShowToolbarControl(tool, kFontComboId))
         {
             specs.push_back({ kFontComboId, 168, true });
+        }
+        if (ShouldShowToolbarControl(tool, kCutModeId))
+        {
+            specs.push_back({ kCutModeId, 64 });
+        }
+        if (ShouldShowToolbarControl(tool, kMoveModeId))
+        {
+            specs.push_back({ kMoveModeId, 72 });
         }
 
         return specs;
@@ -407,7 +559,8 @@ namespace
             oneshot::MarkupEditorWindow::Tool::Rectangle,
             oneshot::MarkupEditorWindow::Tool::Ellipse,
             oneshot::MarkupEditorWindow::Tool::Polygon,
-            oneshot::MarkupEditorWindow::Tool::Text
+            oneshot::MarkupEditorWindow::Tool::Text,
+            oneshot::MarkupEditorWindow::Tool::CutMove
         };
     }
 
@@ -429,6 +582,8 @@ namespace
             return L"Poly";
         case oneshot::MarkupEditorWindow::Tool::Text:
             return L"Text";
+        case oneshot::MarkupEditorWindow::Tool::CutMove:
+            return L"Cut + Move";
         default:
             return L"Pen";
         }
@@ -633,15 +788,27 @@ namespace oneshot
         HWND canvas{nullptr};
         HWND textInput{nullptr};
         Tool tool{Tool::Pen};
+        CutMoveMode cutMoveMode{CutMoveMode::Cut};
         CapturedImage currentImage;
         std::optional<CapturedImage> resultImage;
-        std::vector<HBITMAP> undoStack;
-        std::vector<HBITMAP> redoStack;
+        std::vector<EditorSnapshot> undoStack;
+        std::vector<EditorSnapshot> redoStack;
+        std::vector<RasterLayer> layers;
+        RECT documentBounds{};
+        bool documentActive{false};
+        int nextLayerId{1};
+        int selectedLayerId{0};
         RECT imageRect{};
         bool isDrawing{false};
         bool previewActive{false};
         POINT dragStart{};
         POINT dragCurrent{};
+        POINT dragDocumentStart{};
+        POINT dragDocumentCurrent{};
+        int interactionLayerId{0};
+        POINT layerDragAnchor{};
+        RECT layerDragStartBounds{};
+        bool cutMoveChangedThisDrag{false};
         std::vector<POINT> polygonPoints;
         bool polygonInProgress{false};
         StrokeToolSettings penSettings{};
@@ -659,6 +826,8 @@ namespace oneshot
         HWND fontCombo{nullptr};
         HWND thicknessPreview{nullptr};
         HWND thicknessSlider{nullptr};
+        HWND cutModeButton{nullptr};
+        HWND moveModeButton{nullptr};
         double zoom{1.0};
         double minimumZoom{1.0};
         double viewportOffsetX{0.0};
@@ -687,6 +856,323 @@ namespace oneshot
     }
 
     MarkupEditorWindow::~MarkupEditorWindow() = default;
+
+    static void UpdateZoomBounds(MarkupEditorWindow::State& state, bool forceFitIfAtMinimum);
+
+    struct BitmapBitsView
+    {
+        DWORD* pixels{nullptr};
+        int width{0};
+        int height{0};
+        int stridePixels{0};
+        bool topDown{false};
+    };
+
+    static bool TryGetBitmapBitsView(HBITMAP bitmap, BitmapBitsView& view)
+    {
+        view = {};
+        if (!bitmap)
+        {
+            return false;
+        }
+
+        DIBSECTION section{};
+        if (GetObjectW(bitmap, sizeof(section), &section) != sizeof(section))
+        {
+            return false;
+        }
+        if (!section.dsBm.bmBits || section.dsBm.bmBitsPixel != 32)
+        {
+            return false;
+        }
+
+        view.pixels = static_cast<DWORD*>(section.dsBm.bmBits);
+        view.width = section.dsBm.bmWidth;
+        view.height = std::abs(section.dsBmih.biHeight != 0 ? section.dsBmih.biHeight : section.dsBm.bmHeight);
+        view.stridePixels = section.dsBm.bmWidthBytes / 4;
+        view.topDown = section.dsBmih.biHeight < 0;
+        return view.width > 0 && view.height > 0 && view.stridePixels >= view.width;
+    }
+
+    static DWORD* GetBitmapRow(BitmapBitsView& view, int y)
+    {
+        if (y < 0 || y >= view.height || !view.pixels)
+        {
+            return nullptr;
+        }
+
+        const int rowIndex = view.topDown ? y : (view.height - 1 - y);
+        return view.pixels + (static_cast<size_t>(rowIndex) * static_cast<size_t>(view.stridePixels));
+    }
+
+    static const DWORD* GetBitmapRow(const BitmapBitsView& view, int y)
+    {
+        if (y < 0 || y >= view.height || !view.pixels)
+        {
+            return nullptr;
+        }
+
+        const int rowIndex = view.topDown ? y : (view.height - 1 - y);
+        return view.pixels + (static_cast<size_t>(rowIndex) * static_cast<size_t>(view.stridePixels));
+    }
+
+    static HBITMAP CreateTransparentBitmap(int width, int height)
+    {
+        if (width <= 0 || height <= 0)
+        {
+            return nullptr;
+        }
+
+        HDC screenDc = GetDC(nullptr);
+        if (!screenDc)
+        {
+            return nullptr;
+        }
+
+        void* bits = nullptr;
+        BITMAPINFO info{};
+        info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        info.bmiHeader.biWidth = width;
+        info.bmiHeader.biHeight = -height;
+        info.bmiHeader.biPlanes = 1;
+        info.bmiHeader.biBitCount = 32;
+        info.bmiHeader.biCompression = BI_RGB;
+        HBITMAP bitmap = CreateDIBSection(screenDc, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+        ReleaseDC(nullptr, screenDc);
+        if (!bitmap || !bits)
+        {
+            if (bitmap)
+            {
+                DeleteObject(bitmap);
+            }
+            return nullptr;
+        }
+
+        memset(bits, 0, static_cast<size_t>(width) * static_cast<size_t>(height) * sizeof(DWORD));
+        return bitmap;
+    }
+
+    static oneshot::CapturedImage CloneCapturedImage(const oneshot::CapturedImage& source)
+    {
+        oneshot::CapturedImage clone;
+        clone.bitmap = MarkupEditorWindow::CloneBitmap(source.bitmap);
+        clone.x = source.x;
+        clone.y = source.y;
+        clone.width = source.width;
+        clone.height = source.height;
+        clone.capturedAtUtc = source.capturedAtUtc;
+        return clone;
+    }
+
+    static RasterLayer CloneLayer(const RasterLayer& source)
+    {
+        RasterLayer clone;
+        clone.id = source.id;
+        clone.bitmap = MarkupEditorWindow::CloneBitmap(source.bitmap);
+        clone.bounds = source.bounds;
+        clone.visible = source.visible;
+        return clone;
+    }
+
+    static void ClearSnapshotStack(std::vector<EditorSnapshot>& stack)
+    {
+        stack.clear();
+    }
+
+    static EditorSnapshot CaptureEditorSnapshot(const MarkupEditorWindow::State& state)
+    {
+        EditorSnapshot snapshot;
+        snapshot.image = CloneCapturedImage(state.currentImage);
+        snapshot.layers.reserve(state.layers.size());
+        for (const auto& layer : state.layers)
+        {
+            snapshot.layers.push_back(CloneLayer(layer));
+        }
+        snapshot.documentBounds = state.documentBounds;
+        snapshot.documentActive = state.documentActive;
+        snapshot.nextLayerId = state.nextLayerId;
+        snapshot.selectedLayerId = state.selectedLayerId;
+        return snapshot;
+    }
+
+    static void RestoreEditorSnapshot(MarkupEditorWindow::State& state, EditorSnapshot snapshot)
+    {
+        state.currentImage = std::move(snapshot.image);
+        state.layers = std::move(snapshot.layers);
+        state.documentBounds = snapshot.documentBounds;
+        state.documentActive = snapshot.documentActive;
+        state.nextLayerId = snapshot.nextLayerId;
+        state.selectedLayerId = snapshot.selectedLayerId;
+        state.previewActive = false;
+        state.isDrawing = false;
+        state.interactionLayerId = 0;
+        state.cutMoveChangedThisDrag = false;
+        if (state.canvas)
+        {
+            UpdateZoomBounds(state, false);
+        }
+    }
+
+    static void PushUndoState(MarkupEditorWindow::State& state)
+    {
+        state.undoStack.push_back(CaptureEditorSnapshot(state));
+        ClearSnapshotStack(state.redoStack);
+    }
+
+    static bool BitmapHasVisiblePixels(HBITMAP bitmap)
+    {
+        BitmapBitsView view{};
+        if (!TryGetBitmapBitsView(bitmap, view))
+        {
+            return false;
+        }
+
+        for (int y = 0; y < view.height; ++y)
+        {
+            const DWORD* row = GetBitmapRow(view, y);
+            for (int x = 0; x < view.width; ++x)
+            {
+                if ((row[x] >> 24) != 0)
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    static bool BitmapRectHasVisiblePixels(HBITMAP bitmap, const RECT& rect)
+    {
+        BitmapBitsView view{};
+        if (!TryGetBitmapBitsView(bitmap, view))
+        {
+            return false;
+        }
+
+        const RECT clipped = IntersectRectsCopy(rect, MakeSizedRect(0, 0, view.width, view.height));
+        if (IsRectEmpty(clipped))
+        {
+            return false;
+        }
+
+        for (int y = clipped.top; y < clipped.bottom; ++y)
+        {
+            const DWORD* row = GetBitmapRow(view, y);
+            for (int x = clipped.left; x < clipped.right; ++x)
+            {
+                if ((row[x] >> 24) != 0)
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    static void ClearBitmapAlphaRect(HBITMAP bitmap, const RECT& rect)
+    {
+        BitmapBitsView view{};
+        if (!TryGetBitmapBitsView(bitmap, view))
+        {
+            return;
+        }
+
+        const RECT clipped = IntersectRectsCopy(rect, MakeSizedRect(0, 0, view.width, view.height));
+        if (IsRectEmpty(clipped))
+        {
+            return;
+        }
+
+        for (int y = clipped.top; y < clipped.bottom; ++y)
+        {
+            DWORD* row = GetBitmapRow(view, y);
+            for (int x = clipped.left; x < clipped.right; ++x)
+            {
+                row[x] = 0;
+            }
+        }
+    }
+
+    static HBITMAP CopyBitmapRegion(HBITMAP sourceBitmap, const RECT& sourceRect)
+    {
+        const RECT normalized = NormalizeRect(sourceRect);
+        if (IsRectEmpty(normalized))
+        {
+            return nullptr;
+        }
+
+        BitmapBitsView source{};
+        if (!TryGetBitmapBitsView(sourceBitmap, source))
+        {
+            return nullptr;
+        }
+
+        const RECT clipped = IntersectRectsCopy(normalized, MakeSizedRect(0, 0, source.width, source.height));
+        if (IsRectEmpty(clipped))
+        {
+            return nullptr;
+        }
+
+        HBITMAP copy = CreateTransparentBitmap(RectWidth(clipped), RectHeight(clipped));
+        if (!copy)
+        {
+            return nullptr;
+        }
+
+        BitmapBitsView target{};
+        if (!TryGetBitmapBitsView(copy, target))
+        {
+            DeleteObject(copy);
+            return nullptr;
+        }
+
+        for (int y = 0; y < target.height; ++y)
+        {
+            const DWORD* sourceRow = GetBitmapRow(source, clipped.top + y);
+            DWORD* targetRow = GetBitmapRow(target, y);
+            memcpy(targetRow, sourceRow + clipped.left, static_cast<size_t>(target.width) * sizeof(DWORD));
+        }
+
+        return copy;
+    }
+
+    static void ComposeBitmapOver(HBITMAP sourceBitmap, HBITMAP targetBitmap, POINT targetOffset)
+    {
+        BitmapBitsView source{};
+        BitmapBitsView target{};
+        if (!TryGetBitmapBitsView(sourceBitmap, source) || !TryGetBitmapBitsView(targetBitmap, target))
+        {
+            return;
+        }
+
+        for (int y = 0; y < source.height; ++y)
+        {
+            const int targetY = targetOffset.y + y;
+            if (targetY < 0 || targetY >= target.height)
+            {
+                continue;
+            }
+
+            const DWORD* sourceRow = GetBitmapRow(source, y);
+            DWORD* targetRow = GetBitmapRow(target, targetY);
+            for (int x = 0; x < source.width; ++x)
+            {
+                const int targetX = targetOffset.x + x;
+                if (targetX < 0 || targetX >= target.width)
+                {
+                    continue;
+                }
+
+                const DWORD pixel = sourceRow[x];
+                if ((pixel >> 24) != 0)
+                {
+                    targetRow[targetX] = pixel;
+                }
+            }
+        }
+    }
 
     static bool ChooseEditorColor(HWND owner, COLORREF& color, COLORREF customColors[16])
     {
@@ -980,6 +1466,44 @@ namespace oneshot
         }
     }
 
+    static void DrawSelectionOverlay(HDC hdc, RECT rect, bool fillSelection)
+    {
+        if (IsRectEmpty(rect))
+        {
+            return;
+        }
+
+        if (fillSelection)
+        {
+            HDC fillDc = CreateCompatibleDC(hdc);
+            HBITMAP fillBitmap = CreateCompatibleBitmap(hdc, 1, 1);
+            if (fillDc && fillBitmap)
+            {
+                HGDIOBJ previous = SelectObject(fillDc, fillBitmap);
+                SetPixel(fillDc, 0, 0, kSelectionFillColor);
+                const BLENDFUNCTION blend{ AC_SRC_OVER, 0, kSelectionFillAlpha, 0 };
+                AlphaBlend(hdc, rect.left, rect.top, RectWidth(rect), RectHeight(rect), fillDc, 0, 0, 1, 1, blend);
+                SelectObject(fillDc, previous);
+            }
+            if (fillBitmap)
+            {
+                DeleteObject(fillBitmap);
+            }
+            if (fillDc)
+            {
+                DeleteDC(fillDc);
+            }
+        }
+
+        HPEN pen = CreatePen(PS_SOLID, 1, kSelectionBorderColor);
+        HGDIOBJ oldPen = SelectObject(hdc, pen);
+        HGDIOBJ oldBrush = SelectObject(hdc, GetStockObject(HOLLOW_BRUSH));
+        Rectangle(hdc, rect.left, rect.top, rect.right, rect.bottom);
+        SelectObject(hdc, oldBrush);
+        SelectObject(hdc, oldPen);
+        DeleteObject(pen);
+    }
+
     static POINT ClampPointToImage(const RECT& imageRect, POINT point)
     {
         point.x = static_cast<LONG>(std::clamp(static_cast<int>(point.x), static_cast<int>(imageRect.left), static_cast<int>(imageRect.right - 1)));
@@ -996,6 +1520,267 @@ namespace oneshot
         mapped.x = static_cast<LONG>(std::clamp(static_cast<int>(mapped.x), 0, image.width - 1));
         mapped.y = static_cast<LONG>(std::clamp(static_cast<int>(mapped.y), 0, image.height - 1));
         return mapped;
+    }
+
+    static int FindLayerIndexById(const MarkupEditorWindow::State& state, int layerId)
+    {
+        if (layerId == 0)
+        {
+            return -1;
+        }
+
+        for (size_t index = 0; index < state.layers.size(); ++index)
+        {
+            if (state.layers[index].id == layerId)
+            {
+                return static_cast<int>(index);
+            }
+        }
+
+        return -1;
+    }
+
+    static POINT ClientToDocumentPoint(const MarkupEditorWindow::State& state, POINT point)
+    {
+        POINT mapped = ClientToImagePoint(state.imageRect, state.currentImage, state.zoom, point);
+        mapped.x += state.documentBounds.left;
+        mapped.y += state.documentBounds.top;
+        return mapped;
+    }
+
+    static POINT DocumentToCompositePoint(const MarkupEditorWindow::State& state, POINT point)
+    {
+        point.x -= state.documentBounds.left;
+        point.y -= state.documentBounds.top;
+        return point;
+    }
+
+    static POINT DocumentToClientPoint(const MarkupEditorWindow::State& state, POINT point)
+    {
+        return ImagePointToClientPoint(state.imageRect, state.zoom, DocumentToCompositePoint(state, point));
+    }
+
+    static RECT DocumentToClientRect(const MarkupEditorWindow::State& state, RECT rect)
+    {
+        RECT mapped{};
+        mapped.left = static_cast<LONG>(std::lround(state.imageRect.left + ((rect.left - state.documentBounds.left) * state.zoom)));
+        mapped.top = static_cast<LONG>(std::lround(state.imageRect.top + ((rect.top - state.documentBounds.top) * state.zoom)));
+        mapped.right = static_cast<LONG>(std::lround(state.imageRect.left + ((rect.right - state.documentBounds.left) * state.zoom)));
+        mapped.bottom = static_cast<LONG>(std::lround(state.imageRect.top + ((rect.bottom - state.documentBounds.top) * state.zoom)));
+        return mapped;
+    }
+
+    static void UpdateDocumentBoundsFromLayers(MarkupEditorWindow::State& state)
+    {
+        RECT bounds{};
+        bool hasVisibleLayer = false;
+        for (const auto& layer : state.layers)
+        {
+            if (!layer.visible || !layer.bitmap || IsRectEmpty(layer.bounds))
+            {
+                continue;
+            }
+
+            hasVisibleLayer = true;
+            UnionIntoRect(bounds, layer.bounds);
+        }
+
+        if (!hasVisibleLayer)
+        {
+            bounds = MakeSizedRect(0, 0, std::max(1, state.currentImage.width), std::max(1, state.currentImage.height));
+        }
+
+        state.documentBounds = bounds;
+    }
+
+    static void RebuildCompositeFromLayers(MarkupEditorWindow::State& state)
+    {
+        if (!state.documentActive)
+        {
+            return;
+        }
+
+        const RECT previousBounds = state.documentBounds;
+        UpdateDocumentBoundsFromLayers(state);
+        HBITMAP composite = CreateTransparentBitmap(RectWidth(state.documentBounds), RectHeight(state.documentBounds));
+        if (!composite)
+        {
+            return;
+        }
+
+        for (const auto& layer : state.layers)
+        {
+            if (!layer.visible || !layer.bitmap)
+            {
+                continue;
+            }
+
+            POINT offset{};
+            offset.x = layer.bounds.left - state.documentBounds.left;
+            offset.y = layer.bounds.top - state.documentBounds.top;
+            ComposeBitmapOver(layer.bitmap, composite, offset);
+        }
+
+        state.currentImage.Reset();
+        state.currentImage.bitmap = composite;
+        state.currentImage.x = state.documentBounds.left;
+        state.currentImage.y = state.documentBounds.top;
+        state.currentImage.width = RectWidth(state.documentBounds);
+        state.currentImage.height = RectHeight(state.documentBounds);
+
+        if (state.canvas)
+        {
+            state.viewportOffsetX += (static_cast<double>(previousBounds.left - state.documentBounds.left) * state.zoom);
+            state.viewportOffsetY += (static_cast<double>(previousBounds.top - state.documentBounds.top) * state.zoom);
+            UpdateZoomBounds(state, false);
+        }
+    }
+
+    static void EnsureDocumentFromCurrentImage(MarkupEditorWindow::State& state)
+    {
+        if (state.documentActive)
+        {
+            return;
+        }
+
+        state.layers.clear();
+        RasterLayer layer;
+        layer.id = state.nextLayerId++;
+        layer.bitmap = MarkupEditorWindow::CloneBitmap(state.currentImage.bitmap);
+        layer.bounds = MakeRect(
+            state.currentImage.x,
+            state.currentImage.y,
+            state.currentImage.x + state.currentImage.width,
+            state.currentImage.y + state.currentImage.height);
+        state.layers.push_back(std::move(layer));
+        state.selectedLayerId = state.layers.front().id;
+        state.documentBounds = state.layers.front().bounds;
+        state.documentActive = true;
+    }
+
+    static void FlattenDocumentLayers(MarkupEditorWindow::State& state)
+    {
+        if (!state.documentActive)
+        {
+            return;
+        }
+
+        RebuildCompositeFromLayers(state);
+        state.layers.clear();
+        state.documentActive = false;
+        state.selectedLayerId = 0;
+        state.interactionLayerId = 0;
+    }
+
+    static bool LayerContainsDocumentPoint(const RasterLayer& layer, POINT point)
+    {
+        if (!layer.visible || !layer.bitmap || !PtInRect(&layer.bounds, point))
+        {
+            return false;
+        }
+
+        BitmapBitsView view{};
+        if (!TryGetBitmapBitsView(layer.bitmap, view))
+        {
+            return false;
+        }
+
+        const int localX = point.x - layer.bounds.left;
+        const int localY = point.y - layer.bounds.top;
+        if (localX < 0 || localX >= view.width || localY < 0 || localY >= view.height)
+        {
+            return false;
+        }
+
+        const DWORD* row = GetBitmapRow(view, localY);
+        return row && ((row[localX] >> 24) != 0);
+    }
+
+    static int HitTestTopLayer(const MarkupEditorWindow::State& state, POINT point)
+    {
+        for (auto it = state.layers.rbegin(); it != state.layers.rend(); ++it)
+        {
+            if (LayerContainsDocumentPoint(*it, point))
+            {
+                return it->id;
+            }
+        }
+
+        return 0;
+    }
+
+    static void BringLayerToFront(MarkupEditorWindow::State& state, int layerId)
+    {
+        const int index = FindLayerIndexById(state, layerId);
+        if (index < 0 || index == static_cast<int>(state.layers.size()) - 1)
+        {
+            return;
+        }
+
+        RasterLayer layer = std::move(state.layers[static_cast<size_t>(index)]);
+        state.layers.erase(state.layers.begin() + index);
+        state.layers.push_back(std::move(layer));
+    }
+
+    static bool PerformLayerCut(MarkupEditorWindow::State& state, int layerId, RECT cutRect)
+    {
+        const int index = FindLayerIndexById(state, layerId);
+        if (index < 0)
+        {
+            return false;
+        }
+
+        RasterLayer& layer = state.layers[static_cast<size_t>(index)];
+        const RECT intersection = IntersectRectsCopy(layer.bounds, NormalizeRect(cutRect));
+        if (IsRectEmpty(intersection))
+        {
+            return false;
+        }
+
+        const RECT localCut = OffsetRectCopy(intersection, -layer.bounds.left, -layer.bounds.top);
+        if (!BitmapRectHasVisiblePixels(layer.bitmap, localCut))
+        {
+            return false;
+        }
+
+        HBITMAP liftedBitmap = CopyBitmapRegion(layer.bitmap, localCut);
+        HBITMAP remainderBitmap = MarkupEditorWindow::CloneBitmap(layer.bitmap);
+        if (!liftedBitmap || !remainderBitmap)
+        {
+            if (liftedBitmap)
+            {
+                DeleteObject(liftedBitmap);
+            }
+            if (remainderBitmap)
+            {
+                DeleteObject(remainderBitmap);
+            }
+            return false;
+        }
+
+        ClearBitmapAlphaRect(remainderBitmap, localCut);
+        layer.Reset();
+        layer.bitmap = remainderBitmap;
+
+        RasterLayer liftedLayer;
+        liftedLayer.id = state.nextLayerId++;
+        liftedLayer.bitmap = liftedBitmap;
+        liftedLayer.bounds = intersection;
+
+        const bool layerStillVisible = BitmapHasVisiblePixels(layer.bitmap);
+        if (!layerStillVisible)
+        {
+            state.layers.erase(state.layers.begin() + index);
+            state.layers.insert(state.layers.begin() + index, std::move(liftedLayer));
+        }
+        else
+        {
+            state.layers.insert(state.layers.begin() + index + 1, std::move(liftedLayer));
+        }
+
+        state.selectedLayerId = state.layers[static_cast<size_t>(std::min(index + (layerStillVisible ? 1 : 0), static_cast<int>(state.layers.size()) - 1))].id;
+        RebuildCompositeFromLayers(state);
+        return true;
     }
 
     static bool ScreenToCanvasClient(HWND canvas, LPARAM lParam, POINT& point)
@@ -1147,7 +1932,8 @@ namespace oneshot
 
     static bool ToolUsesStrokeOptions(MarkupEditorWindow::Tool tool)
     {
-        return tool != MarkupEditorWindow::Tool::Text;
+        return tool != MarkupEditorWindow::Tool::Text
+            && tool != MarkupEditorWindow::Tool::CutMove;
     }
 
     static bool ToolUsesFillOptions(MarkupEditorWindow::Tool tool)
@@ -1160,6 +1946,11 @@ namespace oneshot
     static bool ToolUsesTextOptions(MarkupEditorWindow::Tool tool)
     {
         return tool == MarkupEditorWindow::Tool::Text;
+    }
+
+    static bool ToolUsesCutMoveOptions(MarkupEditorWindow::Tool tool)
+    {
+        return tool == MarkupEditorWindow::Tool::CutMove;
     }
 
     static std::wstring FormatHexColor(COLORREF color)
@@ -1187,6 +1978,8 @@ namespace oneshot
             return L"POLY OPTIONS";
         case MarkupEditorWindow::Tool::Text:
             return L"TEXT OPTIONS";
+        case MarkupEditorWindow::Tool::CutMove:
+            return L"CUT + MOVE";
         default:
             return L"OPTIONS";
         }
@@ -1236,6 +2029,11 @@ namespace oneshot
             meta += text.fontFace;
             break;
         }
+        case MarkupEditorWindow::Tool::CutMove:
+            meta = L"CUT + MOVE  ";
+            meta += state.cutMoveMode == CutMoveMode::Cut ? L"CUT" : L"MOVE";
+            meta += state.documentActive ? L"  Layers active" : L"  Single layer";
+            break;
         default:
             break;
         }
@@ -1248,6 +2046,7 @@ namespace oneshot
     {
         MarkupEditorPreferences preferences{};
         preferences.activeTool = state.tool;
+        preferences.cutMoveMode = state.cutMoveMode;
         preferences.pen = state.penSettings;
         preferences.line = state.lineSettings;
         preferences.arrow = state.arrowSettings;
@@ -1480,6 +2279,9 @@ namespace oneshot
         case kFontUpId:
         case kFontComboId:
             return ToolUsesTextOptions(tool);
+        case kCutModeId:
+        case kMoveModeId:
+            return ToolUsesCutMoveOptions(tool);
         default:
             return true;
         }
@@ -1503,7 +2305,7 @@ namespace oneshot
             return;
         }
 
-        for (const int id : { kStrokeColorId, kFillColorId, kTextColorId, kFillToggleId, kThicknessPreviewId, kThicknessSliderId, kFontDownId, kFontUpId })
+        for (const int id : { kStrokeColorId, kFillColorId, kTextColorId, kFillToggleId, kThicknessPreviewId, kThicknessSliderId, kFontDownId, kFontUpId, kCutModeId, kMoveModeId })
         {
             SetControlVisible(GetDlgItem(state.hwnd, id), ShouldShowToolControl(state.tool, id));
         }
@@ -1519,6 +2321,9 @@ namespace oneshot
         {
             CheckDlgButton(state.hwnd, kFillToggleId, BST_UNCHECKED);
         }
+
+        CheckDlgButton(state.hwnd, kCutModeId, state.cutMoveMode == CutMoveMode::Cut ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(state.hwnd, kMoveModeId, state.cutMoveMode == CutMoveMode::Move ? BST_CHECKED : BST_UNCHECKED);
 
         if (state.fontCombo)
         {
@@ -1642,7 +2447,7 @@ namespace oneshot
     {
         return {
             kStrokeColorId, kFillColorId, kTextColorId, kFillToggleId, kThicknessPreviewId,
-            kFontDownId, kFontUpId, kFitId, kUndoId, kRedoId, kCopyId, kDoneId, kCancelId,
+            kFontDownId, kFontUpId, kCutModeId, kMoveModeId, kFitId, kUndoId, kRedoId, kCopyId, kDoneId, kCancelId,
             kPromptOkId, kPromptCancelId
         };
     }
@@ -2424,26 +3229,6 @@ namespace oneshot
         ReleaseDC(nullptr, screenDc);
     }
 
-    static void PushUndoState(MarkupEditorWindow::State& state)
-    {
-        if (HBITMAP snapshot = MarkupEditorWindow::CloneBitmap(state.currentImage.bitmap))
-        {
-            state.undoStack.push_back(snapshot);
-            MarkupEditorWindow::ClearBitmapStack(state.redoStack);
-        }
-    }
-
-    static void RestoreBitmap(MarkupEditorWindow::State& state, HBITMAP snapshot)
-    {
-        if (!snapshot)
-        {
-            return;
-        }
-
-        state.currentImage.Reset();
-        state.currentImage.bitmap = snapshot;
-    }
-
     static void ReleaseCanvasBackBuffer(MarkupEditorWindow::State& state)
     {
         if (state.canvasBackBufferDc)
@@ -2544,6 +3329,21 @@ namespace oneshot
 
     static void SetActiveTool(MarkupEditorWindow::State& state, MarkupEditorWindow::Tool tool)
     {
+        if (state.tool == tool)
+        {
+            return;
+        }
+
+        if (state.tool == MarkupEditorWindow::Tool::CutMove && tool != MarkupEditorWindow::Tool::CutMove)
+        {
+            FlattenDocumentLayers(state);
+        }
+        else if (state.tool != MarkupEditorWindow::Tool::CutMove && tool == MarkupEditorWindow::Tool::CutMove)
+        {
+            EnsureDocumentFromCurrentImage(state);
+            RebuildCompositeFromLayers(state);
+        }
+
         state.tool = tool;
         PersistEditorPreferences(state);
         RefreshToolSelectionUi(state);
@@ -2602,7 +3402,10 @@ namespace oneshot
             DrawPolygonPreview(targetDc, canvasRect, state.zoom, state.polygonPoints, current, polygon.stroke.color, previewThickness);
         }
 
-        if (state.previewActive && state.tool != MarkupEditorWindow::Tool::Pen && state.tool != MarkupEditorWindow::Tool::Polygon)
+        if (state.previewActive
+            && state.tool != MarkupEditorWindow::Tool::Pen
+            && state.tool != MarkupEditorWindow::Tool::Polygon
+            && state.tool != MarkupEditorWindow::Tool::CutMove)
         {
             const POINT start = ClientToImagePoint(state.imageRect, state.currentImage, state.zoom, state.dragStart);
             const POINT end = ClientToImagePoint(state.imageRect, state.currentImage, state.zoom, state.dragCurrent);
@@ -2658,6 +3461,25 @@ namespace oneshot
             DeleteObject(pen);
         }
 
+        if (state.tool == MarkupEditorWindow::Tool::CutMove)
+        {
+            if (state.selectedLayerId != 0)
+            {
+                const int layerIndex = FindLayerIndexById(state, state.selectedLayerId);
+                if (layerIndex >= 0)
+                {
+                    RECT selectionRect = DocumentToClientRect(state, state.layers[static_cast<size_t>(layerIndex)].bounds);
+                    DrawSelectionOverlay(targetDc, selectionRect, false);
+                }
+            }
+
+            if (state.previewActive && state.cutMoveMode == CutMoveMode::Cut)
+            {
+                RECT previewRect = DocumentToClientRect(state, RectFromPoints(state.dragDocumentStart, state.dragDocumentCurrent));
+                DrawSelectionOverlay(targetDc, previewRect, true);
+            }
+        }
+
         if (targetDc != hdc)
         {
             BitBlt(hdc, 0, 0, state.canvasBackBufferWidth, state.canvasBackBufferHeight, targetDc, 0, 0, SRCCOPY);
@@ -2694,15 +3516,12 @@ namespace oneshot
         State state{};
         state.outputService = &_outputService;
         state.settingsStore = &_settingsStore;
-        state.currentImage.bitmap = CloneBitmap(source.bitmap);
-        state.currentImage.x = source.x;
-        state.currentImage.y = source.y;
-        state.currentImage.width = source.width;
-        state.currentImage.height = source.height;
-        state.currentImage.capturedAtUtc = source.capturedAtUtc;
+        state.currentImage = CloneCapturedImage(source);
+        state.documentBounds = MakeRect(source.x, source.y, source.x + source.width, source.y + source.height);
 
         const auto& preferences = _settingsStore.GetPreferences();
         state.tool = preferences.activeTool;
+        state.cutMoveMode = preferences.cutMoveMode;
         state.penSettings = preferences.pen;
         state.lineSettings = preferences.line;
         state.arrowSettings = preferences.arrow;
@@ -2710,6 +3529,11 @@ namespace oneshot
         state.ellipseSettings = preferences.ellipse;
         state.polygonSettings = preferences.polygon;
         state.textSettings = preferences.text;
+        if (state.tool == Tool::CutMove)
+        {
+            EnsureDocumentFromCurrentImage(state);
+            RebuildCompositeFromLayers(state);
+        }
 
         HWND window = CreateWindowExW(
             WS_EX_APPWINDOW,
@@ -2750,8 +3574,8 @@ namespace oneshot
             DestroyAcceleratorTable(accelerators);
         }
 
-        ClearBitmapStack(state.undoStack);
-        ClearBitmapStack(state.redoStack);
+        ClearSnapshotStack(state.undoStack);
+        ClearSnapshotStack(state.redoStack);
         return std::move(state.resultImage);
     }
 
@@ -2800,6 +3624,8 @@ namespace oneshot
             state->thicknessSlider = CreateWindowExW(0, TRACKBAR_CLASSW, L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | TBS_HORZ | TBS_NOTICKS, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kThicknessSliderId)), GetModuleHandleW(nullptr), nullptr);
             CreateWindowExW(0, L"Button", L"F-", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFontDownId)), GetModuleHandleW(nullptr), nullptr);
             CreateWindowExW(0, L"Button", L"F+", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFontUpId)), GetModuleHandleW(nullptr), nullptr);
+            state->cutModeButton = CreateWindowExW(0, L"Button", L"CUT", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON | WS_GROUP, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCutModeId)), GetModuleHandleW(nullptr), nullptr);
+            state->moveModeButton = CreateWindowExW(0, L"Button", L"MOVE", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kMoveModeId)), GetModuleHandleW(nullptr), nullptr);
             CreateWindowExW(0, L"Button", L"Fit", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFitId)), GetModuleHandleW(nullptr), nullptr);
             CreateWindowExW(0, L"Button", L"Undo", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kUndoId)), GetModuleHandleW(nullptr), nullptr);
             CreateWindowExW(0, L"Button", L"Redo", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kRedoId)), GetModuleHandleW(nullptr), nullptr);
@@ -2920,13 +3746,10 @@ namespace oneshot
             case kUndoId:
                 if (!state->undoStack.empty())
                 {
-                    if (HBITMAP current = CloneBitmap(state->currentImage.bitmap))
-                    {
-                        state->redoStack.push_back(current);
-                    }
-                    HBITMAP snapshot = state->undoStack.back();
+                    state->redoStack.push_back(CaptureEditorSnapshot(*state));
+                    EditorSnapshot snapshot = std::move(state->undoStack.back());
                     state->undoStack.pop_back();
-                    RestoreBitmap(*state, snapshot);
+                    RestoreEditorSnapshot(*state, std::move(snapshot));
                     InvalidateRect(hwnd, nullptr, FALSE);
                     InvalidateCanvas(*state);
                 }
@@ -2934,13 +3757,10 @@ namespace oneshot
             case kRedoId:
                 if (!state->redoStack.empty())
                 {
-                    if (HBITMAP current = CloneBitmap(state->currentImage.bitmap))
-                    {
-                        state->undoStack.push_back(current);
-                    }
-                    HBITMAP snapshot = state->redoStack.back();
+                    state->undoStack.push_back(CaptureEditorSnapshot(*state));
+                    EditorSnapshot snapshot = std::move(state->redoStack.back());
                     state->redoStack.pop_back();
-                    RestoreBitmap(*state, snapshot);
+                    RestoreEditorSnapshot(*state, std::move(snapshot));
                     InvalidateRect(hwnd, nullptr, FALSE);
                     InvalidateCanvas(*state);
                 }
@@ -3016,6 +3836,20 @@ namespace oneshot
                     InvalidateCanvas(*state);
                 }
                 return 0;
+            case kCutModeId:
+                state->cutMoveMode = CutMoveMode::Cut;
+                PersistEditorPreferences(*state);
+                SyncToolOptionControls(*state);
+                InvalidateRect(hwnd, nullptr, FALSE);
+                InvalidateCanvas(*state);
+                return 0;
+            case kMoveModeId:
+                state->cutMoveMode = CutMoveMode::Move;
+                PersistEditorPreferences(*state);
+                SyncToolOptionControls(*state);
+                InvalidateRect(hwnd, nullptr, FALSE);
+                InvalidateCanvas(*state);
+                return 0;
             case kFitId:
                 state->userAdjustedViewport = false;
                 FitImageToViewport(*state);
@@ -3023,6 +3857,10 @@ namespace oneshot
                 InvalidateCanvas(*state);
                 return 0;
             case kDoneId:
+                if (state->documentActive)
+                {
+                    RebuildCompositeFromLayers(*state);
+                }
                 state->resultImage = std::move(state->currentImage);
                 state->finished = true;
                 DestroyWindow(hwnd);
@@ -3161,6 +3999,82 @@ namespace oneshot
             state->dragStart = point;
             state->dragCurrent = point;
             state->isDrawing = true;
+            state->interactionLayerId = 0;
+            state->cutMoveChangedThisDrag = false;
+
+            if (state->tool == Tool::CutMove)
+            {
+                EnsureDocumentFromCurrentImage(*state);
+                state->dragDocumentStart = ClientToDocumentPoint(*state, point);
+                state->dragDocumentCurrent = state->dragDocumentStart;
+                if (state->cutMoveMode == CutMoveMode::Cut)
+                {
+                    int targetLayerId = 0;
+                    const int selectedIndex = FindLayerIndexById(*state, state->selectedLayerId);
+                    if (selectedIndex >= 0 && LayerContainsDocumentPoint(state->layers[static_cast<size_t>(selectedIndex)], state->dragDocumentStart))
+                    {
+                        targetLayerId = state->selectedLayerId;
+                    }
+                    else
+                    {
+                        targetLayerId = HitTestTopLayer(*state, state->dragDocumentStart);
+                    }
+
+                    if (targetLayerId == 0)
+                    {
+                        state->previewActive = false;
+                        state->isDrawing = false;
+                        ReleaseCapture();
+                        return 0;
+                    }
+
+                    state->interactionLayerId = targetLayerId;
+                    state->selectedLayerId = targetLayerId;
+                    state->previewActive = true;
+                    InvalidateCanvas(*state);
+                    return 0;
+                }
+
+                const int layerId = HitTestTopLayer(*state, state->dragDocumentStart);
+                state->selectedLayerId = layerId;
+                if (layerId == 0)
+                {
+                    state->previewActive = false;
+                    state->isDrawing = false;
+                    ReleaseCapture();
+                    InvalidateCanvas(*state);
+                    return 0;
+                }
+
+                const int originalIndex = FindLayerIndexById(*state, layerId);
+                const bool movedToFront = originalIndex >= 0 && originalIndex != static_cast<int>(state->layers.size()) - 1;
+                if (movedToFront)
+                {
+                    PushUndoState(*state);
+                    state->cutMoveChangedThisDrag = true;
+                }
+                BringLayerToFront(*state, layerId);
+                if (movedToFront)
+                {
+                    RebuildCompositeFromLayers(*state);
+                }
+
+                const int layerIndex = FindLayerIndexById(*state, layerId);
+                if (layerIndex < 0)
+                {
+                    state->previewActive = false;
+                    state->isDrawing = false;
+                    ReleaseCapture();
+                    return 0;
+                }
+
+                state->interactionLayerId = layerId;
+                state->layerDragAnchor = state->dragDocumentStart;
+                state->layerDragStartBounds = state->layers[static_cast<size_t>(layerIndex)].bounds;
+                state->previewActive = false;
+                InvalidateCanvas(*state);
+                return 0;
+            }
 
             if (state->tool == Tool::Pen)
             {
@@ -3247,7 +4161,34 @@ namespace oneshot
             {
                 POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
                 point = ClampPointToImage(state->imageRect, point);
-                if (state->tool == Tool::Pen)
+                if (state->tool == Tool::CutMove)
+                {
+                    state->dragCurrent = point;
+                    state->dragDocumentCurrent = ClientToDocumentPoint(*state, point);
+                    if (state->cutMoveMode == CutMoveMode::Cut)
+                    {
+                        state->previewActive = true;
+                        InvalidateCanvas(*state);
+                        return 0;
+                    }
+
+                    const int layerIndex = FindLayerIndexById(*state, state->interactionLayerId);
+                    if (layerIndex >= 0)
+                    {
+                        const int deltaX = state->dragDocumentCurrent.x - state->layerDragAnchor.x;
+                        const int deltaY = state->dragDocumentCurrent.y - state->layerDragAnchor.y;
+                        if ((deltaX != 0 || deltaY != 0) && !state->cutMoveChangedThisDrag)
+                        {
+                            PushUndoState(*state);
+                            state->cutMoveChangedThisDrag = true;
+                        }
+
+                        state->layers[static_cast<size_t>(layerIndex)].bounds = OffsetRectCopy(state->layerDragStartBounds, deltaX, deltaY);
+                        RebuildCompositeFromLayers(*state);
+                        InvalidateCanvas(*state);
+                    }
+                }
+                else if (state->tool == Tool::Pen)
                 {
                     HDC screenDc = GetDC(nullptr);
                     HDC memoryDc = CreateCompatibleDC(screenDc);
@@ -3307,6 +4248,33 @@ namespace oneshot
             {
                 POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
                 point = ClampPointToImage(state->imageRect, point);
+                if (state->tool == Tool::CutMove)
+                {
+                    state->dragCurrent = point;
+                    state->dragDocumentCurrent = ClientToDocumentPoint(*state, point);
+                    if (state->cutMoveMode == CutMoveMode::Cut && state->interactionLayerId != 0)
+                    {
+                        const RECT cutRect = RectFromPoints(state->dragDocumentStart, state->dragDocumentCurrent);
+                        if (!IsRectEmpty(cutRect))
+                        {
+                            EditorSnapshot before = CaptureEditorSnapshot(*state);
+                            if (PerformLayerCut(*state, state->interactionLayerId, cutRect))
+                            {
+                                state->undoStack.push_back(std::move(before));
+                                ClearSnapshotStack(state->redoStack);
+                            }
+                        }
+                    }
+
+                    state->previewActive = false;
+                    state->isDrawing = false;
+                    state->interactionLayerId = 0;
+                    state->cutMoveChangedThisDrag = false;
+                    ReleaseCapture();
+                    InvalidateCanvas(*state);
+                    return 0;
+                }
+
                 if (state->tool != Tool::Pen && state->tool != Tool::Text)
                 {
                     PushUndoState(*state);

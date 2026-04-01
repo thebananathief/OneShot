@@ -67,6 +67,8 @@ namespace
             return L"polygon";
         case oneshot::MarkupTool::Text:
             return L"text";
+        case oneshot::MarkupTool::CutMove:
+            return L"cut_move";
         default:
             return L"pen";
         }
@@ -102,6 +104,37 @@ namespace
         if (normalized == L"text")
         {
             return oneshot::MarkupTool::Text;
+        }
+        if (normalized == L"cut_move" || normalized == L"cutmove")
+        {
+            return oneshot::MarkupTool::CutMove;
+        }
+
+        return std::nullopt;
+    }
+
+    std::wstring CutMoveModeToString(oneshot::MarkupCutMoveMode mode)
+    {
+        switch (mode)
+        {
+        case oneshot::MarkupCutMoveMode::Move:
+            return L"move";
+        case oneshot::MarkupCutMoveMode::Cut:
+        default:
+            return L"cut";
+        }
+    }
+
+    std::optional<oneshot::MarkupCutMoveMode> ParseCutMoveMode(const std::wstring& value)
+    {
+        const std::wstring normalized = ToLower(Trim(value));
+        if (normalized == L"cut")
+        {
+            return oneshot::MarkupCutMoveMode::Cut;
+        }
+        if (normalized == L"move")
+        {
+            return oneshot::MarkupCutMoveMode::Move;
         }
 
         return std::nullopt;
@@ -312,6 +345,10 @@ namespace oneshot
         {
             preferences.activeTool = *activeTool;
         }
+        if (const auto cutMoveMode = ParseCutMoveMode(ReadIniString(_settingsPath, kEditorSection, L"cut_move_mode")))
+        {
+            preferences.cutMoveMode = *cutMoveMode;
+        }
 
         LoadStroke(preferences.pen, [this](const wchar_t* key) { return ReadIniString(_settingsPath, kPenSection, key); });
         LoadStroke(preferences.line, [this](const wchar_t* key) { return ReadIniString(_settingsPath, kLineSection, key); });
@@ -352,6 +389,7 @@ namespace oneshot
         bool ok = true;
         ok = WriteIniValue(_settingsPath, kMetaSection, L"version", L"1") && ok;
         ok = WriteIniValue(_settingsPath, kEditorSection, L"active_tool", ToolToString(preferences.activeTool)) && ok;
+        ok = WriteIniValue(_settingsPath, kEditorSection, L"cut_move_mode", CutMoveModeToString(preferences.cutMoveMode)) && ok;
 
         ok = WriteIniValue(_settingsPath, kPenSection, L"color", FormatColor(preferences.pen.color)) && ok;
         ok = WriteIniValue(_settingsPath, kPenSection, L"thickness", FormatInt(preferences.pen.thickness)) && ok;

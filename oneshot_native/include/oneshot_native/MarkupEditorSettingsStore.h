@@ -13,7 +13,14 @@ namespace oneshot
         Rectangle,
         Ellipse,
         Polygon,
-        Text
+        Text,
+        CutMove
+    };
+
+    enum class MarkupCutMoveMode
+    {
+        Cut,
+        Move
     };
 
     struct MarkupStrokePreferences
@@ -39,6 +46,7 @@ namespace oneshot
     struct MarkupEditorPreferences
     {
         MarkupTool activeTool{MarkupTool::Pen};
+        MarkupCutMoveMode cutMoveMode{MarkupCutMoveMode::Cut};
         MarkupStrokePreferences pen{};
         MarkupStrokePreferences line{};
         MarkupStrokePreferences arrow{};

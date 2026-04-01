@@ -5,7 +5,7 @@
 
 namespace
 {
-    struct OpaqueBitmapPixels
+    struct BitmapPixels
     {
         int width{0};
         int height{0};
@@ -102,7 +102,7 @@ namespace
         return info;
     }
 
-    bool ExtractOpaqueBitmapPixels(HBITMAP bitmap, OpaqueBitmapPixels& pixels, std::wstring& error)
+    bool ExtractBitmapPixels(HBITMAP bitmap, BitmapPixels& pixels, std::wstring& error)
     {
         pixels = {};
 
@@ -145,15 +145,10 @@ namespace
             return false;
         }
 
-        for (size_t offset = 3; offset < pixels.bytes.size(); offset += 4)
-        {
-            pixels.bytes[offset] = 0xFF;
-        }
-
         return true;
     }
 
-    bool CreatePackedDibFromPixels(const OpaqueBitmapPixels& pixels, bool useV5Header, PackedDib& dib, std::wstring& error)
+    bool CreatePackedDibFromPixels(const BitmapPixels& pixels, bool useV5Header, PackedDib& dib, std::wstring& error)
     {
         dib.Reset();
 
@@ -209,7 +204,7 @@ namespace
         return true;
     }
 
-    bool CreateBitmapFromPixels(const OpaqueBitmapPixels& pixels, HBITMAP& bitmap, std::wstring& error)
+    bool CreateBitmapFromPixels(const BitmapPixels& pixels, HBITMAP& bitmap, std::wstring& error)
     {
         bitmap = nullptr;
         if (pixels.width <= 0 || pixels.height <= 0 || pixels.bytes.empty())
@@ -244,7 +239,7 @@ namespace
         return true;
     }
 
-    bool EncodeOpaquePixelsToPngStream(const OpaqueBitmapPixels& pixels, IStream* stream, std::wstring& error)
+    bool EncodePixelsToPngStream(const BitmapPixels& pixels, IStream* stream, std::wstring& error)
     {
         if (!stream)
         {
@@ -373,7 +368,7 @@ namespace
         return true;
     }
 
-    bool EncodeOpaquePixelsToPngBytes(const OpaqueBitmapPixels& pixels, std::vector<BYTE>& bytes, std::wstring& error)
+    bool EncodePixelsToPngBytes(const BitmapPixels& pixels, std::vector<BYTE>& bytes, std::wstring& error)
     {
         bytes.clear();
 
@@ -394,7 +389,7 @@ namespace
             }
         };
 
-        if (!EncodeOpaquePixelsToPngStream(pixels, stream, error))
+        if (!EncodePixelsToPngStream(pixels, stream, error))
         {
             releaseStream();
             return false;
@@ -474,9 +469,9 @@ namespace oneshot
             return false;
         }
 
-        OpaqueBitmapPixels pixels{};
+        BitmapPixels pixels{};
         std::wstring pixelError;
-        if (!ExtractOpaqueBitmapPixels(image.bitmap, pixels, pixelError))
+        if (!ExtractBitmapPixels(image.bitmap, pixels, pixelError))
         {
             error = pixelError;
             return false;
@@ -504,7 +499,7 @@ namespace oneshot
         {
             dibV5.Reset();
         }
-        if (!EncodeOpaquePixelsToPngBytes(pixels, pngBytes, pngError))
+        if (!EncodePixelsToPngBytes(pixels, pngBytes, pngError))
         {
             pngBytes.clear();
         }
@@ -660,13 +655,13 @@ namespace oneshot
 
     bool OutputService::EncodeBitmapToPngStream(HBITMAP bitmap, IStream* stream, std::wstring& error) const
     {
-        OpaqueBitmapPixels pixels{};
-        if (!ExtractOpaqueBitmapPixels(bitmap, pixels, error))
+        BitmapPixels pixels{};
+        if (!ExtractBitmapPixels(bitmap, pixels, error))
         {
             return false;
         }
 
-        return EncodeOpaquePixelsToPngStream(pixels, stream, error);
+        return EncodePixelsToPngStream(pixels, stream, error);
     }
 
     bool OutputService::EncodeBitmapToPngBytes(HBITMAP bitmap, std::vector<BYTE>& bytes, std::wstring& error) const
