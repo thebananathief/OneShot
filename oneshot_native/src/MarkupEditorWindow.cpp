@@ -126,12 +126,20 @@ namespace
         RECT toolbarRect{};
     };
 
+    enum class RasterLayerKind
+    {
+        Snapshot,
+        Annotation,
+        Fragment,
+    };
+
     struct RasterLayer
     {
         int id{0};
         HBITMAP bitmap{nullptr};
         RECT bounds{};
         bool visible{true};
+        RasterLayerKind kind{RasterLayerKind::Fragment};
 
         RasterLayer() = default;
         RasterLayer(const RasterLayer&) = delete;
@@ -142,6 +150,7 @@ namespace
             , bitmap(std::exchange(other.bitmap, nullptr))
             , bounds(other.bounds)
             , visible(other.visible)
+            , kind(other.kind)
         {
         }
 
@@ -157,6 +166,7 @@ namespace
             bitmap = std::exchange(other.bitmap, nullptr);
             bounds = other.bounds;
             visible = other.visible;
+            kind = other.kind;
             return *this;
         }
 
@@ -952,10 +962,12 @@ namespace oneshot
         return bitmap;
     }
 
+    static HBITMAP CloneBitmapPixels(HBITMAP sourceBitmap);
+
     static oneshot::CapturedImage CloneCapturedImage(const oneshot::CapturedImage& source)
     {
         oneshot::CapturedImage clone;
-        clone.bitmap = MarkupEditorWindow::CloneBitmap(source.bitmap);
+        clone.bitmap = CloneBitmapPixels(source.bitmap);
         clone.x = source.x;
         clone.y = source.y;
         clone.width = source.width;
@@ -968,9 +980,10 @@ namespace oneshot
     {
         RasterLayer clone;
         clone.id = source.id;
-        clone.bitmap = MarkupEditorWindow::CloneBitmap(source.bitmap);
+        clone.bitmap = CloneBitmapPixels(source.bitmap);
         clone.bounds = source.bounds;
         clone.visible = source.visible;
+        clone.kind = source.kind;
         return clone;
     }
 
@@ -1172,6 +1185,22 @@ namespace oneshot
                 }
             }
         }
+    }
+
+    static HBITMAP CloneBitmapPixels(HBITMAP sourceBitmap)
+    {
+        if (!sourceBitmap)
+        {
+            return nullptr;
+        }
+
+        BitmapBitsView view{};
+        if (!TryGetBitmapBitsView(sourceBitmap, view))
+        {
+            return MarkupEditorWindow::CloneBitmap(sourceBitmap);
+        }
+
+        return CopyBitmapRegion(sourceBitmap, MakeSizedRect(0, 0, view.width, view.height));
     }
 
     static bool ChooseEditorColor(HWND owner, COLORREF& color, COLORREF customColors[16])
@@ -1636,40 +1665,109 @@ namespace oneshot
         }
     }
 
-    static void EnsureDocumentFromCurrentImage(MarkupEditorWindow::State& state)
+    static bool IsAnnotationLayerWritable(const MarkupEditorWindow::State& state, const RasterLayer& layer)
     {
-        if (state.documentActive)
+        if (!layer.visible || !layer.bitmap || layer.kind != RasterLayerKind::Annotation)
         {
-            return;
+            return false;
         }
 
-        state.layers.clear();
-        RasterLayer layer;
-        layer.id = state.nextLayerId++;
-        layer.bitmap = MarkupEditorWindow::CloneBitmap(state.currentImage.bitmap);
-        layer.bounds = MakeRect(
-            state.currentImage.x,
-            state.currentImage.y,
-            state.currentImage.x + state.currentImage.width,
-            state.currentImage.y + state.currentImage.height);
-        state.layers.push_back(std::move(layer));
-        state.selectedLayerId = state.layers.front().id;
-        state.documentBounds = state.layers.front().bounds;
-        state.documentActive = true;
+        if (IsRectEmpty(layer.bounds)
+            || layer.bounds.left != state.documentBounds.left
+            || layer.bounds.top != state.documentBounds.top
+            || layer.bounds.right != state.documentBounds.right
+            || layer.bounds.bottom != state.documentBounds.bottom)
+        {
+            return false;
+        }
+
+        BitmapBitsView view{};
+        return TryGetBitmapBitsView(layer.bitmap, view)
+            && view.width == RectWidth(state.documentBounds)
+            && view.height == RectHeight(state.documentBounds);
     }
 
-    static void FlattenDocumentLayers(MarkupEditorWindow::State& state)
+    static int FindWritableAnnotationLayerIndex(const MarkupEditorWindow::State& state)
     {
-        if (!state.documentActive)
+        for (int index = static_cast<int>(state.layers.size()) - 1; index >= 0; --index)
         {
-            return;
+            if (IsAnnotationLayerWritable(state, state.layers[static_cast<size_t>(index)]))
+            {
+                return index;
+            }
         }
 
-        RebuildCompositeFromLayers(state);
+        return -1;
+    }
+
+    static int EnsureWritableAnnotationLayer(MarkupEditorWindow::State& state)
+    {
+        const int existingIndex = FindWritableAnnotationLayerIndex(state);
+        if (existingIndex >= 0)
+        {
+            if (existingIndex != static_cast<int>(state.layers.size()) - 1)
+            {
+                RasterLayer layer = std::move(state.layers[static_cast<size_t>(existingIndex)]);
+                state.layers.erase(state.layers.begin() + existingIndex);
+                state.layers.push_back(std::move(layer));
+                return static_cast<int>(state.layers.size()) - 1;
+            }
+
+            return existingIndex;
+        }
+
+        RasterLayer annotationLayer;
+        annotationLayer.id = state.nextLayerId++;
+        annotationLayer.bitmap = CreateTransparentBitmap(RectWidth(state.documentBounds), RectHeight(state.documentBounds));
+        annotationLayer.bounds = state.documentBounds;
+        annotationLayer.kind = RasterLayerKind::Annotation;
+        if (!annotationLayer.bitmap)
+        {
+            return -1;
+        }
+
+        state.layers.push_back(std::move(annotationLayer));
+        return static_cast<int>(state.layers.size()) - 1;
+    }
+
+    static void InitializeDocumentLayers(MarkupEditorWindow::State& state, const oneshot::CapturedImage& source)
+    {
         state.layers.clear();
-        state.documentActive = false;
-        state.selectedLayerId = 0;
-        state.interactionLayerId = 0;
+        state.nextLayerId = 1;
+        state.documentBounds = MakeRect(source.x, source.y, source.x + source.width, source.y + source.height);
+
+        RasterLayer snapshotLayer;
+        snapshotLayer.id = state.nextLayerId++;
+        snapshotLayer.bitmap = CloneBitmapPixels(source.bitmap);
+        snapshotLayer.bounds = state.documentBounds;
+        snapshotLayer.kind = RasterLayerKind::Snapshot;
+
+        RasterLayer annotationLayer;
+        annotationLayer.id = state.nextLayerId++;
+        annotationLayer.bitmap = CreateTransparentBitmap(source.width, source.height);
+        annotationLayer.bounds = state.documentBounds;
+        annotationLayer.kind = RasterLayerKind::Annotation;
+
+        if (snapshotLayer.bitmap)
+        {
+            state.layers.push_back(std::move(snapshotLayer));
+        }
+        if (annotationLayer.bitmap)
+        {
+            state.layers.push_back(std::move(annotationLayer));
+            state.selectedLayerId = state.layers.back().id;
+        }
+        else if (!state.layers.empty())
+        {
+            state.selectedLayerId = state.layers.front().id;
+        }
+        else
+        {
+            state.selectedLayerId = 0;
+        }
+
+        state.documentActive = true;
+        RebuildCompositeFromLayers(state);
     }
 
     static bool LayerContainsDocumentPoint(const RasterLayer& layer, POINT point)
@@ -1731,6 +1829,7 @@ namespace oneshot
         }
 
         RasterLayer& layer = state.layers[static_cast<size_t>(index)];
+        const RasterLayerKind sourceKind = layer.kind;
         const RECT intersection = IntersectRectsCopy(layer.bounds, NormalizeRect(cutRect));
         if (IsRectEmpty(intersection))
         {
@@ -1761,11 +1860,16 @@ namespace oneshot
         ClearBitmapAlphaRect(remainderBitmap, localCut);
         layer.Reset();
         layer.bitmap = remainderBitmap;
+        if (sourceKind == RasterLayerKind::Annotation)
+        {
+            layer.kind = RasterLayerKind::Fragment;
+        }
 
         RasterLayer liftedLayer;
         liftedLayer.id = state.nextLayerId++;
         liftedLayer.bitmap = liftedBitmap;
         liftedLayer.bounds = intersection;
+        liftedLayer.kind = RasterLayerKind::Fragment;
 
         const bool layerStillVisible = BitmapHasVisiblePixels(layer.bitmap);
         if (!layerStillVisible)
@@ -3156,77 +3260,232 @@ namespace oneshot
         DeleteObject(pen);
     }
 
-    static void CommitPreview(MarkupEditorWindow::State& state, POINT startPoint, POINT endPoint)
+    static bool MergeMaskedBitmapIntoLayer(HBITMAP targetBitmap, HBITMAP colorBitmap, HBITMAP maskBitmap)
     {
-        HDC screenDc = GetDC(nullptr);
-        HDC memoryDc = CreateCompatibleDC(screenDc);
-        HGDIOBJ previous = SelectObject(memoryDc, state.currentImage.bitmap);
-
-        const auto& stroke = GetStrokeSettings(state, state.tool);
-        HPEN pen = CreatePen(PS_SOLID, stroke.thickness, stroke.color);
-        HGDIOBJ oldPen = SelectObject(memoryDc, pen);
-        HBRUSH fillBrush = nullptr;
-        HGDIOBJ oldBrush = SelectObject(memoryDc, GetStockObject(HOLLOW_BRUSH));
-        if (const ShapeToolSettings* shape = GetShapeSettings(state, state.tool))
+        BitmapBitsView target{};
+        BitmapBitsView color{};
+        BitmapBitsView mask{};
+        if (!TryGetBitmapBitsView(targetBitmap, target)
+            || !TryGetBitmapBitsView(colorBitmap, color)
+            || !TryGetBitmapBitsView(maskBitmap, mask)
+            || target.width != color.width
+            || target.height != color.height
+            || target.width != mask.width
+            || target.height != mask.height)
         {
-            fillBrush = CreateSolidBrush(shape->fillColor);
-            SelectObject(memoryDc, oldBrush);
-            oldBrush = SelectObject(memoryDc, shape->fillEnabled ? fillBrush : GetStockObject(HOLLOW_BRUSH));
+            return false;
         }
 
-        switch (state.tool)
+        for (int y = 0; y < target.height; ++y)
         {
+            DWORD* targetRow = GetBitmapRow(target, y);
+            const DWORD* colorRow = GetBitmapRow(color, y);
+            const DWORD* maskRow = GetBitmapRow(mask, y);
+            for (int x = 0; x < target.width; ++x)
+            {
+                if ((maskRow[x] & 0x00FFFFFFu) != 0)
+                {
+                    targetRow[x] = 0xFF000000u | (colorRow[x] & 0x00FFFFFFu);
+                }
+            }
+        }
+
+        return true;
+    }
+
+    template <typename ColorRenderer, typename MaskRenderer>
+    static bool RenderIntoLayerWithMask(HBITMAP targetBitmap, ColorRenderer&& colorRenderer, MaskRenderer&& maskRenderer)
+    {
+        BitmapBitsView targetView{};
+        if (!TryGetBitmapBitsView(targetBitmap, targetView))
+        {
+            return false;
+        }
+
+        HBITMAP colorBitmap = CreateTransparentBitmap(targetView.width, targetView.height);
+        HBITMAP maskBitmap = CreateTransparentBitmap(targetView.width, targetView.height);
+        if (!colorBitmap || !maskBitmap)
+        {
+            if (colorBitmap)
+            {
+                DeleteObject(colorBitmap);
+            }
+            if (maskBitmap)
+            {
+                DeleteObject(maskBitmap);
+            }
+            return false;
+        }
+
+        HDC screenDc = GetDC(nullptr);
+        HDC colorDc = CreateCompatibleDC(screenDc);
+        HDC maskDc = CreateCompatibleDC(screenDc);
+        if (!colorDc || !maskDc)
+        {
+            if (colorDc)
+            {
+                DeleteDC(colorDc);
+            }
+            if (maskDc)
+            {
+                DeleteDC(maskDc);
+            }
+            ReleaseDC(nullptr, screenDc);
+            DeleteObject(colorBitmap);
+            DeleteObject(maskBitmap);
+            return false;
+        }
+
+        HGDIOBJ oldColorBitmap = SelectObject(colorDc, colorBitmap);
+        HGDIOBJ oldMaskBitmap = SelectObject(maskDc, maskBitmap);
+        colorRenderer(colorDc);
+        maskRenderer(maskDc);
+        SelectObject(colorDc, oldColorBitmap);
+        SelectObject(maskDc, oldMaskBitmap);
+        DeleteDC(colorDc);
+        DeleteDC(maskDc);
+        ReleaseDC(nullptr, screenDc);
+
+        const bool merged = MergeMaskedBitmapIntoLayer(targetBitmap, colorBitmap, maskBitmap);
+        DeleteObject(colorBitmap);
+        DeleteObject(maskBitmap);
+        return merged;
+    }
+
+    static void DrawCommittedToolPrimitive(
+        MarkupEditorWindow::State& state,
+        HDC dc,
+        MarkupEditorWindow::Tool tool,
+        POINT startPoint,
+        POINT endPoint,
+        COLORREF strokeColor,
+        COLORREF fillColor,
+        bool fillEnabled)
+    {
+        const auto& stroke = GetStrokeSettings(state, tool);
+
+        HPEN pen = CreatePen(PS_SOLID, stroke.thickness, strokeColor);
+        HGDIOBJ oldPen = SelectObject(dc, pen);
+        HBRUSH fillBrush = nullptr;
+        HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
+        if (const ShapeToolSettings* shape = GetShapeSettings(state, tool))
+        {
+            fillBrush = CreateSolidBrush(fillColor);
+            SelectObject(dc, oldBrush);
+            oldBrush = SelectObject(dc, fillEnabled ? fillBrush : GetStockObject(HOLLOW_BRUSH));
+        }
+
+        switch (tool)
+        {
+        case MarkupEditorWindow::Tool::Pen:
         case MarkupEditorWindow::Tool::Line:
-            MoveToEx(memoryDc, startPoint.x, startPoint.y, nullptr);
-            LineTo(memoryDc, endPoint.x, endPoint.y);
+            MoveToEx(dc, startPoint.x, startPoint.y, nullptr);
+            LineTo(dc, endPoint.x, endPoint.y);
             break;
         case MarkupEditorWindow::Tool::Arrow:
-            SelectObject(memoryDc, oldPen);
+            SelectObject(dc, oldPen);
             DeleteObject(pen);
-            SelectObject(memoryDc, oldBrush);
+            SelectObject(dc, oldBrush);
             if (fillBrush)
             {
                 DeleteObject(fillBrush);
             }
-            MarkupEditorWindow::DrawArrow(memoryDc, startPoint, endPoint, stroke.color, stroke.thickness);
+            MarkupEditorWindow::DrawArrow(dc, startPoint, endPoint, strokeColor, stroke.thickness);
             pen = nullptr;
             fillBrush = nullptr;
             break;
         case MarkupEditorWindow::Tool::Rectangle:
         {
             RECT rect = NormalizeShapeRect(startPoint, endPoint, false);
-            Rectangle(memoryDc, rect.left, rect.top, rect.right, rect.bottom);
+            Rectangle(dc, rect.left, rect.top, rect.right, rect.bottom);
             break;
         }
         case MarkupEditorWindow::Tool::Ellipse:
         {
             RECT rect = NormalizeShapeRect(startPoint, endPoint, false);
-            Ellipse(memoryDc, rect.left, rect.top, rect.right, rect.bottom);
+            Ellipse(dc, rect.left, rect.top, rect.right, rect.bottom);
             break;
         }
         case MarkupEditorWindow::Tool::Polygon:
             if (state.polygonPoints.size() >= 3)
             {
-                Polygon(memoryDc, state.polygonPoints.data(), static_cast<int>(state.polygonPoints.size()));
+                Polygon(dc, state.polygonPoints.data(), static_cast<int>(state.polygonPoints.size()));
             }
             break;
         default:
             break;
         }
 
-        SelectObject(memoryDc, oldBrush);
+        SelectObject(dc, oldBrush);
         if (fillBrush)
         {
             DeleteObject(fillBrush);
         }
         if (pen)
         {
-            SelectObject(memoryDc, oldPen);
+            SelectObject(dc, oldPen);
             DeleteObject(pen);
         }
-        SelectObject(memoryDc, previous);
-        DeleteDC(memoryDc);
-        ReleaseDC(nullptr, screenDc);
+    }
+
+    static bool CommitPrimitiveToLayer(MarkupEditorWindow::State& state, HBITMAP targetBitmap, POINT startPoint, POINT endPoint)
+    {
+        const auto& stroke = GetStrokeSettings(state, state.tool);
+        const ShapeToolSettings* shape = GetShapeSettings(state, state.tool);
+        const COLORREF fillColor = shape ? shape->fillColor : RGB(255, 255, 255);
+        const bool fillEnabled = shape && shape->fillEnabled;
+        return RenderIntoLayerWithMask(
+            targetBitmap,
+            [&](HDC dc)
+            {
+                DrawCommittedToolPrimitive(state, dc, state.tool, startPoint, endPoint, stroke.color, fillColor, fillEnabled);
+            },
+            [&](HDC dc)
+            {
+                DrawCommittedToolPrimitive(state, dc, state.tool, startPoint, endPoint, RGB(255, 255, 255), RGB(255, 255, 255), fillEnabled);
+            });
+    }
+
+    static bool CommitTextToLayer(
+        const TextToolSettings& textSettings,
+        HBITMAP targetBitmap,
+        POINT origin,
+        const std::wstring& text)
+    {
+        return RenderIntoLayerWithMask(
+            targetBitmap,
+            [&](HDC dc)
+            {
+                SetBkMode(dc, TRANSPARENT);
+                SetTextColor(dc, textSettings.color);
+                HFONT font = CreateFontW(textSettings.fontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE, textSettings.fontFace.c_str());
+                HGDIOBJ oldFont = SelectObject(dc, font);
+                TextOutW(dc, origin.x, origin.y, text.c_str(), static_cast<int>(text.size()));
+                SelectObject(dc, oldFont);
+                DeleteObject(font);
+            },
+            [&](HDC dc)
+            {
+                SetBkMode(dc, TRANSPARENT);
+                SetTextColor(dc, RGB(255, 255, 255));
+                HFONT font = CreateFontW(textSettings.fontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE, textSettings.fontFace.c_str());
+                HGDIOBJ oldFont = SelectObject(dc, font);
+                TextOutW(dc, origin.x, origin.y, text.c_str(), static_cast<int>(text.size()));
+                SelectObject(dc, oldFont);
+                DeleteObject(font);
+            });
+    }
+
+    static HBITMAP GetWritableAnnotationBitmap(MarkupEditorWindow::State& state)
+    {
+        const int layerIndex = EnsureWritableAnnotationLayer(state);
+        if (layerIndex < 0)
+        {
+            return nullptr;
+        }
+
+        state.selectedLayerId = state.layers[static_cast<size_t>(layerIndex)].id;
+        return state.layers[static_cast<size_t>(layerIndex)].bitmap;
     }
 
     static void ReleaseCanvasBackBuffer(MarkupEditorWindow::State& state)
@@ -3332,16 +3591,6 @@ namespace oneshot
         if (state.tool == tool)
         {
             return;
-        }
-
-        if (state.tool == MarkupEditorWindow::Tool::CutMove && tool != MarkupEditorWindow::Tool::CutMove)
-        {
-            FlattenDocumentLayers(state);
-        }
-        else if (state.tool != MarkupEditorWindow::Tool::CutMove && tool == MarkupEditorWindow::Tool::CutMove)
-        {
-            EnsureDocumentFromCurrentImage(state);
-            RebuildCompositeFromLayers(state);
         }
 
         state.tool = tool;
@@ -3529,11 +3778,7 @@ namespace oneshot
         state.ellipseSettings = preferences.ellipse;
         state.polygonSettings = preferences.polygon;
         state.textSettings = preferences.text;
-        if (state.tool == Tool::CutMove)
-        {
-            EnsureDocumentFromCurrentImage(state);
-            RebuildCompositeFromLayers(state);
-        }
+        InitializeDocumentLayers(state, source);
 
         HWND window = CreateWindowExW(
             WS_EX_APPWINDOW,
@@ -4004,7 +4249,6 @@ namespace oneshot
 
             if (state->tool == Tool::CutMove)
             {
-                EnsureDocumentFromCurrentImage(*state);
                 state->dragDocumentStart = ClientToDocumentPoint(*state, point);
                 state->dragDocumentCurrent = state->dragDocumentStart;
                 if (state->cutMoveMode == CutMoveMode::Cut)
@@ -4103,21 +4347,13 @@ namespace oneshot
                 if (text.has_value())
                 {
                     PushUndoState(*state);
-                    HDC screenDc = GetDC(nullptr);
-                    HDC memoryDc = CreateCompatibleDC(screenDc);
-                    HGDIOBJ previous = SelectObject(memoryDc, state->currentImage.bitmap);
-                    SetBkMode(memoryDc, TRANSPARENT);
                     const auto& textSettings = GetTextSettings(*state);
-                    SetTextColor(memoryDc, textSettings.color);
-                    HFONT font = CreateFontW(textSettings.fontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE, textSettings.fontFace.c_str());
-                    HGDIOBJ oldFont = SelectObject(memoryDc, font);
                     POINT mapped = ClientToImagePoint(state->imageRect, state->currentImage, state->zoom, point);
-                    TextOutW(memoryDc, mapped.x, mapped.y, text->c_str(), static_cast<int>(text->size()));
-                    SelectObject(memoryDc, oldFont);
-                    DeleteObject(font);
-                    SelectObject(memoryDc, previous);
-                    DeleteDC(memoryDc);
-                    ReleaseDC(nullptr, screenDc);
+                    if (HBITMAP annotationBitmap = GetWritableAnnotationBitmap(*state))
+                    {
+                        CommitTextToLayer(textSettings, annotationBitmap, mapped, *text);
+                        RebuildCompositeFromLayers(*state);
+                    }
                     InvalidateCanvas(*state);
                 }
                 state->isDrawing = false;
@@ -4190,21 +4426,13 @@ namespace oneshot
                 }
                 else if (state->tool == Tool::Pen)
                 {
-                    HDC screenDc = GetDC(nullptr);
-                    HDC memoryDc = CreateCompatibleDC(screenDc);
-                    HGDIOBJ previous = SelectObject(memoryDc, state->currentImage.bitmap);
-                    const auto& stroke = GetStrokeSettings(*state, state->tool);
-                    HPEN pen = CreatePen(PS_SOLID, stroke.thickness, stroke.color);
-                    HGDIOBJ oldPen = SelectObject(memoryDc, pen);
                     POINT start = ClientToImagePoint(state->imageRect, state->currentImage, state->zoom, state->dragCurrent);
                     POINT end = ClientToImagePoint(state->imageRect, state->currentImage, state->zoom, point);
-                    MoveToEx(memoryDc, start.x, start.y, nullptr);
-                    LineTo(memoryDc, end.x, end.y);
-                    SelectObject(memoryDc, oldPen);
-                    DeleteObject(pen);
-                    SelectObject(memoryDc, previous);
-                    DeleteDC(memoryDc);
-                    ReleaseDC(nullptr, screenDc);
+                    if (HBITMAP annotationBitmap = GetWritableAnnotationBitmap(*state))
+                    {
+                        CommitPrimitiveToLayer(*state, annotationBitmap, start, end);
+                        RebuildCompositeFromLayers(*state);
+                    }
                     state->dragCurrent = point;
                     InvalidateCanvas(*state);
                 }
@@ -4282,7 +4510,11 @@ namespace oneshot
                     POINT end = ClientToImagePoint(state->imageRect, state->currentImage, state->zoom, point);
                     const bool shiftHeld = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
                     const FinalizedDragGeometry geometry = FinalizeDragGeometry(state->tool, start, end, shiftHeld);
-                    CommitPreview(*state, geometry.start, geometry.end);
+                    if (HBITMAP annotationBitmap = GetWritableAnnotationBitmap(*state))
+                    {
+                        CommitPrimitiveToLayer(*state, annotationBitmap, geometry.start, geometry.end);
+                        RebuildCompositeFromLayers(*state);
+                    }
                     state->previewActive = false;
                     InvalidateCanvas(*state);
                 }
@@ -4330,7 +4562,11 @@ namespace oneshot
             {
                 if (state->polygonPoints.size() >= 3)
                 {
-                    CommitPreview(*state, { 0, 0 }, { 0, 0 });
+                    if (HBITMAP annotationBitmap = GetWritableAnnotationBitmap(*state))
+                    {
+                        CommitPrimitiveToLayer(*state, annotationBitmap, { 0, 0 }, { 0, 0 });
+                        RebuildCompositeFromLayers(*state);
+                    }
                 }
 
                 state->polygonPoints.clear();
